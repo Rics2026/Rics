@@ -1,1 +1,3 @@
-Update 1.1
+Update 1.0
+- Code_Editor.py -- kann .py im ordner memory/brain bearbeiten
+- timer.py       -- startet timer xx minuten

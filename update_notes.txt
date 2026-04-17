@@ -1,10 +1,7 @@
-Update 1.4
-- bot.py /vergiss fehler behoben
-- updater.py fix Restart funtion()
-- Discord_manager.py fix Bot reagiert auf Bot
-- Bot.py fix für Bot restart, Port clear add start
+Update 1.5
+- bot.py benutzt bei gesrpächen Zeitberechnung
 - practive_brain.py Markdown fehler behoben
-
+- alle Module nutzen jetzt Deepseek - Groq - Lokal Ollama
 Coming Soon
 - Code_Editor.py -- kann .py im ordner memory/brain bearbeiten
 - timer.py       -- startet timer xx minuten

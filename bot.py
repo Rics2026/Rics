@@ -3,6 +3,36 @@
 
 import os
 import sys
+
+# ═══════════════════════════════════════════════════════════════
+# SOCKET-FD CLEANUP — MUSS vor allen weiteren Imports laufen!
+# Falls via os.execv() gestartet: Werkzeug's Listening-Socket auf
+# Port 5001 wird ohne CLOEXEC vererbt → "Address already in use".
+# Wir schließen deshalb gezielt nur Socket-FDs — andere File-FDs
+# (z.B. /dev/urandom das Python intern nutzt) bleiben offen,
+# sonst crasht Python beim Import von ssl/hashlib.
+# ═══════════════════════════════════════════════════════════════
+import stat as _stat
+try:
+    import resource as _res
+    _MAX_FD = _res.getrlimit(_res.RLIMIT_NOFILE)[0]
+    if _MAX_FD > 4096 or _MAX_FD < 0:
+        _MAX_FD = 4096
+except Exception:
+    _MAX_FD = 4096
+
+for _fd in range(3, _MAX_FD):
+    try:
+        _st = os.fstat(_fd)
+        if _stat.S_ISSOCK(_st.st_mode):
+            os.close(_fd)
+    except OSError:
+        pass
+try:
+    del _fd, _st, _MAX_FD, _res, _stat
+except NameError:
+    pass
+
 import json
 import subprocess
 import importlib
@@ -328,9 +358,6 @@ class PersonalMemory:
             data.setdefault("basisinfo", {})["name"] = name
             self._write(data)
             print(f"🧠 basisinfo.name aus system_prompt initialisiert: {name}")
-
-    def delete_fact(self, id_or_key) -> bool:
-        """Löscht einen Fakt per ID (Zahl) oder Key (String). True = gelöscht."""
         data   = self._read()
         fakten = data.get("fakten", [])
         # Erst per ID versuchen
@@ -341,10 +368,10 @@ class PersonalMemory:
                 data["fakten"] = new_f
                 self._write(data)
                 return True
-        except (ValueError, TypeError):
+        except ValueError:
             pass
         # Per Key
-        key = str(id_or_key).lower().strip()
+        key = id_or_key.lower().strip()
         new_f = [f for f in fakten if f.get("key") != key]
         if len(new_f) < len(fakten):
             data["fakten"] = new_f
@@ -1229,14 +1256,24 @@ def _start_setup_mode():
 
 
 def _free_web_port():
-    """Killt Prozesse die den Web-Port belegen (außer sich selbst)."""
-    import signal
+    """
+    Macht den Web-Port frei vor dem Start.
+
+    Behandelt 3 Fälle:
+    1. Fremder Prozess hält den Port  → killen
+    2. Eigene PID hält den Port (nach os.execv — FD-Vererbung)
+       → aktiv versuchen zu binden mit SO_REUSEADDR, bis es klappt
+    3. Port ist frei → direkt raus
+    """
+    import signal, socket, time
     port = int(os.getenv("WEB_PORT", 5001))
+    own  = os.getpid()
+
+    # ── Phase 1: fremde Prozesse killen ──────────────────────────
     try:
         out = subprocess.check_output(
             ["lsof", "-ti", f"tcp:{port}"], stderr=subprocess.DEVNULL
         ).decode().strip()
-        own = os.getpid()
         for pid_str in out.splitlines():
             pid = int(pid_str.strip())
             if pid != own:
@@ -1246,9 +1283,30 @@ def _free_web_port():
                 except ProcessLookupError:
                     pass
         if out:
-            import time; time.sleep(1)
+            time.sleep(1)
     except (subprocess.CalledProcessError, FileNotFoundError, ValueError):
         pass
+
+    # ── Phase 2: Port wirklich bindbar? (Retry bis 10s) ──────────
+    for attempt in range(20):
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+            except (AttributeError, OSError):
+                pass
+            s.bind(("0.0.0.0", port))
+            s.close()
+            if attempt > 0:
+                print(f"✅ Port {port} nach {attempt*0.5:.1f}s freigegeben")
+            return
+        except OSError as e:
+            if attempt == 0:
+                print(f"⏳ Port {port} noch belegt ({e}) — warte...")
+            time.sleep(0.5)
+
+    print(f"❌ Port {port} nach 10s immer noch belegt — starte trotzdem")
 
 
 def main():

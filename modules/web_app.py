@@ -2077,8 +2077,25 @@ def setup(app_instance, event_bus_instance=None):
     logger.info(f"✅ Telegram App für Command-Router: {_telegram_app is not None}")
 
     port = int(os.getenv("WEB_PORT", 5001))
-    threading.Thread(
-        target=lambda: app.run(host="0.0.0.0", port=port, threaded=True, use_reloader=False),
-        daemon=True
-    ).start()
+
+    # ── Flask mit Retry-Loop starten ───────────────────────────
+    # Werkzeug setzt intern SO_REUSEADDR, das hilft bei TIME_WAIT.
+    # Falls Port trotzdem noch kurz belegt: bis zu 15s retry.
+    def _run_flask():
+        import time as _t
+        for attempt in range(30):
+            try:
+                app.run(
+                    host="0.0.0.0",
+                    port=port,
+                    threaded=True,
+                    use_reloader=False,
+                )
+                return
+            except OSError as e:
+                logger.warning(f"🔌 Flask Port {port} noch belegt ({e}) — retry {attempt+1}/30")
+                _t.sleep(0.5)
+        logger.error(f"❌ Flask konnte Port {port} nach 15s nicht binden")
+
+    threading.Thread(target=_run_flask, daemon=True).start()
     logger.info(f"🌐 {os.getenv('BOT_NAME', 'RICS')} Web Interface: http://localhost:{port}")

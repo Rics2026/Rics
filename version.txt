@@ -1,4 +1,4 @@
-Version 1.4
+Version 1.5
 modules/moltbook.py
 modules/self_reflection.py
 modules/proactive_brain.py

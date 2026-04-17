@@ -1,6 +1,5 @@
-Version 1.4
-modules/updater.py
+Version 1.5
+modules/moltbook.py
+modules/self_reflection.py
 modules/proactive_brain.py
-modules/discord_manager.py
-modules/web_app.py
 bot.py

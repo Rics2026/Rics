@@ -2212,9 +2212,33 @@ def setup(app_instance, event_bus_instance=None):
     _telegram_app = app_instance
     logger.info(f"✅ Telegram App für Command-Router: {_telegram_app is not None}")
 
-    port = int(os.getenv("WEB_PORT", 5001))
-    threading.Thread(
-        target=lambda: app.run(host="0.0.0.0", port=port, threaded=True, use_reloader=False),
-        daemon=True
-    ).start()
-    logger.info(f"🌐 {os.getenv('BOT_NAME', 'RICS')} Web Interface: http://localhost:{port}")
+    port  = int(os.getenv("WEB_PORT", 5001))
+    delay = float(os.getenv("WEB_START_DELAY", "2"))
+
+    def _run_flask():
+        import socket, time
+        from werkzeug.serving import make_server
+        if delay > 0:
+            time.sleep(delay)
+        for attempt in range(10):
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                sock.bind(("0.0.0.0", port))
+                srv = make_server("0.0.0.0", port, app, threaded=True, fd=sock.fileno())
+                srv.serve_forever()
+                return
+            except OSError as e:
+                sock.close()
+                if e.errno in (48, 98):
+                    logger.warning(f"\u26a0\ufe0f  Port {port} belegt, warte\u2026 (Versuch {attempt+1}/10)")
+                    time.sleep(2)
+                else:
+                    raise
+            except TypeError:
+                sock.close()
+                app.run(host="0.0.0.0", port=port, threaded=True, use_reloader=False)
+                return
+
+    threading.Thread(target=_run_flask, daemon=True).start()
+    logger.info(f"🌐 {os.getenv('BOT_NAME', 'RICS')} Web Interface: http://localhost:{port} (Delay: {delay}s)")

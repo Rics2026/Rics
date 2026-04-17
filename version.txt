@@ -1,2 +1,2 @@
-Version 1.1
-modules/web_app.py
+Version 1.2
+modules/discord_manager.py

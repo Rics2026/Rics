@@ -921,9 +921,6 @@ function sendMsg(cmd) {
                 var box = document.getElementById('chatbox');
                 box.scrollTop = box.scrollHeight;
               }
-              if (j.buttons) {
-                appendInlineButtons(botId, j.buttons);
-              }
               if (j.action_pending) {
                 showActionConfirm(j.action_pending);
               }
@@ -959,49 +956,6 @@ function resetSend() {
   var btn = document.getElementById('send-btn');
   btn.disabled = false;
   btn.textContent = 'SENDEN';
-}
-
-function appendInlineButtons(msgId, rows) {
-  // Fügt Inline-Buttons unter die Nachricht ein (rows = [[{label,data},...]])
-  var msgEl = document.getElementById(msgId);
-  if (!msgEl) return;
-  // Alte Buttons entfernen falls vorhanden
-  var old = msgEl.querySelector('.inline-btns');
-  if (old) old.remove();
-  var wrap = document.createElement('div');
-  wrap.className = 'inline-btns';
-  wrap.style.cssText = 'margin-top:.6rem;display:flex;flex-wrap:wrap;gap:.4rem;';
-  rows.forEach(function(row) {
-    row.forEach(function(btn) {
-      var b = document.createElement('button');
-      b.textContent = btn.label;
-      b.style.cssText = 'padding:.4rem .9rem;background:rgba(0,212,255,.15);border:1px solid rgba(0,212,255,.4);color:var(--c);border-radius:8px;cursor:pointer;font-size:.8rem;font-family:inherit;transition:background .2s;';
-      b.onmouseover = function(){ b.style.background='rgba(0,212,255,.3)'; };
-      b.onmouseout  = function(){ b.style.background='rgba(0,212,255,.15)'; };
-      b.onclick = function() {
-        // Buttons deaktivieren
-        wrap.querySelectorAll('button').forEach(function(x){ x.disabled=true; x.style.opacity='.5'; });
-        b.style.background = 'rgba(0,212,255,.4)';
-        fetch('/callback', {
-          method: 'POST',
-          headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({data: btn.data}),
-          credentials: 'same-origin'
-        })
-        .then(function(r){ return r.json(); })
-        .then(function(d){
-          if (d.result) appendMsg('bot', d.result, null);
-          var box = document.getElementById('chatbox');
-          if (box) box.scrollTop = box.scrollHeight;
-        })
-        .catch(function(e){ appendMsg('bot', '❌ Button-Fehler: ' + e.message, null); });
-      };
-      wrap.appendChild(b);
-    });
-  });
-  msgEl.appendChild(wrap);
-  var box = document.getElementById('chatbox');
-  if (box) box.scrollTop = box.scrollHeight;
 }
 
 // Enter key
@@ -1829,21 +1783,12 @@ def chat():
         if handler_cb:
             def _cmd_stream(_cb=handler_cb, _app=tg_app, _args=args, _cmd=cmd):
                 collected = []
-                collected_buttons = []   # [[{label, data}, ...], ...]  (rows)
 
                 class FakeMessage:
                     text = msg
                     message_id = 0
                     async def reply_text(self, text, **kw):
                         collected.append(str(text))
-                        markup = kw.get("reply_markup")
-                        if markup and hasattr(markup, "inline_keyboard"):
-                            rows = []
-                            for row in markup.inline_keyboard:
-                                rows.append([{"label": btn.text, "data": btn.callback_data} for btn in row])
-                            if rows:
-                                collected_buttons.clear()
-                                collected_buttons.extend(rows)
                     async def reply_chat_action(self, action, **kw):
                         pass
                     async def reply_photo(self, photo, caption=None, **kw):
@@ -1874,8 +1819,6 @@ def chat():
 
                 result = "\n".join(collected) if collected else f"✅ /{_cmd} ausgeführt."
                 yield "data: " + json.dumps({"t": result}) + "\n\n"
-                if collected_buttons:
-                    yield "data: " + json.dumps({"buttons": collected_buttons}) + "\n\n"
                 yield "data: " + json.dumps({"done": True}) + "\n\n"
 
             return Response(_cmd_stream(), mimetype="text/event-stream",
@@ -2116,85 +2059,6 @@ ZEIT: {now_str}
 
 
 # ════════════════════════════════════════════════════════════════
-# CALLBACK-ENDPOINT  (InlineKeyboard-Button-Klicks aus dem Web-Chat)
-# ════════════════════════════════════════════════════════════════
-
-@app.route("/callback", methods=["POST"])
-def callback_handler():
-    """Simuliert einen Telegram CallbackQuery für Web-Chat-Buttons."""
-    if not session.get("auth"):
-        return "Unauthorized", 401
-
-    data = request.get_json(force=True, silent=True) or {}
-    cb_data = data.get("data", "").strip()
-    if not cb_data:
-        return jsonify({"result": "❌ Kein callback_data"})
-
-    tg_app = _telegram_app
-    if not tg_app:
-        return jsonify({"result": "❌ Bot nicht bereit"})
-
-    # CallbackQueryHandler suchen der zu cb_data passt
-    from telegram.ext import CallbackQueryHandler as CQH
-    import re as _re
-    handler_cb = None
-    for group in tg_app.handlers.values():
-        for h in group:
-            if not isinstance(h, CQH):
-                continue
-            pat = h.pattern
-            if pat is None:
-                handler_cb = h.callback; break
-            if isinstance(pat, _re.Pattern):
-                if pat.match(cb_data):
-                    handler_cb = h.callback; break
-            elif isinstance(pat, str):
-                if pat == cb_data or cb_data.startswith(pat):
-                    handler_cb = h.callback; break
-        if handler_cb:
-            break
-
-    if not handler_cb:
-        return jsonify({"result": f"⚠️ Kein Handler für '{cb_data}' gefunden."})
-
-    collected = []
-
-    class FakeCBMessage:
-        message_id = 1
-        async def reply_text(self, text, **kw):
-            collected.append(str(text))
-
-    class FakeCallbackQuery:
-        data    = cb_data
-        message = FakeCBMessage()
-        async def answer(self, **kw): pass
-        async def edit_message_text(self, text, **kw):
-            collected.append(str(text))
-        async def edit_message_reply_markup(self, **kw): pass
-
-    class FakeUpdate:
-        callback_query = FakeCallbackQuery()
-        effective_chat = type("C", (), {"id": 0})()
-        message        = FakeCBMessage()
-
-    class FakeContext:
-        args        = []
-        application = tg_app
-        bot         = tg_app.bot
-
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        loop.run_until_complete(handler_cb(FakeUpdate(), FakeContext()))
-    except Exception as e:
-        collected.append(f"❌ Callback-Fehler: {e}")
-    finally:
-        loop.close()
-
-    return jsonify({"result": "\n".join(collected) or "✅ Ausgeführt."})
-
-
-# ════════════════════════════════════════════════════════════════
 # SETUP  (wird von bot.py aufgerufen)
 # ════════════════════════════════════════════════════════════════
 
@@ -2212,36 +2076,9 @@ def setup(app_instance, event_bus_instance=None):
     _telegram_app = app_instance
     logger.info(f"✅ Telegram App für Command-Router: {_telegram_app is not None}")
 
-    port  = int(os.getenv("WEB_PORT", 5001))
-    delay = float(os.getenv("WEB_START_DELAY", "2"))
-
-    def _run_flask():
-        import socket, time
-        from werkzeug.serving import make_server
-
-        if delay > 0:
-            time.sleep(delay)
-
-        for attempt in range(5):
-            try:
-                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                sock.bind(("0.0.0.0", port))
-                try:
-                    srv = make_server("0.0.0.0", port, app, threaded=True, fd=sock.fileno())
-                    srv.serve_forever()
-                except TypeError:
-                    sock.close()
-                    app.run(host="0.0.0.0", port=port, threaded=True, use_reloader=False)
-                return
-            except OSError as e:
-                sock.close()
-                if e.errno in (48, 98):
-                    logger.warning(f"\u26a0\ufe0f  Port {port} noch belegt, warte... (Versuch {attempt+1}/5)")
-                    time.sleep(2)
-                else:
-                    raise
-        logger.error(f"\u274c Port {port} konnte nicht freigegeben werden.")
-
-    threading.Thread(target=_run_flask, daemon=True).start()
-    logger.info(f"🌐 {os.getenv('BOT_NAME', 'RICS')} Web Interface: http://localhost:{port} (Delay: {delay}s)")
+    port = int(os.getenv("WEB_PORT", 5001))
+    threading.Thread(
+        target=lambda: app.run(host="0.0.0.0", port=port, threaded=True, use_reloader=False),
+        daemon=True
+    ).start()
+    logger.info(f"🌐 {os.getenv('BOT_NAME', 'RICS')} Web Interface: http://localhost:{port}")

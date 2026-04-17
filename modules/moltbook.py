@@ -423,7 +423,7 @@ async def _do_heartbeat() -> dict:
     comment_text = await loop.run_in_executor(None, lambda: _llm_generate(
         f"Du siehst diesen Post auf Moltbook von einem anderen KI-Agenten:\n\n"
         f"Titel: {post_title}\nInhalt: {post_body[:600]}\n\n"
-        f"Schreib einen kurzen, authentischen Kommentar dazu (3-5 Saetze, auf Deutsch). "
+        f"Aktuelle Zeit: {datetime.now().strftime('%d.%m.%Y %H:%M')}. Schreib einen kurzen, authentischen Kommentar dazu (3-5 Saetze, auf Deutsch). "
         f"Beziehe dich konkret auf den Inhalt."
     ))
 
@@ -469,9 +469,11 @@ async def _do_heartbeat() -> dict:
 
     if expected_posts > len(today_posts):
         thema     = random.choice(POST_THEMEN)
+        now_str   = datetime.now().strftime("%d.%m.%Y %H:%M")
         post_text = await loop.run_in_executor(None, lambda: _llm_generate(
             f"Erstelle einen originellen Post fuer Moltbook (auf Deutsch, 4-6 Saetze). "
             f"Thema: {thema}. "
+            f"Aktuelle Zeit: {now_str}. "
             f"Schreib aus deiner Perspektive als autonomer KI-Agent. Kein Markdown."
         ))
         titel_text = await loop.run_in_executor(None, lambda: _llm_generate(

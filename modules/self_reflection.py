@@ -44,7 +44,7 @@ CHATLOG_FILE     = os.path.join(PROJECT_DIR, "logs", "chatlog.json")
 MOLTBOOK_LOG     = os.path.join(PROJECT_DIR, "logs", "moltbook.log")
 JOBS_FILE        = os.path.join(PROJECT_DIR, "jobs.json")
 PENDING_FILE     = os.path.join(PROJECT_DIR, "memory", "pending_thought.json")
-PERSONAL_FILE    = os.path.join(PROJECT_DIR, "personal.json")
+PERSONAL_FILE    = os.path.join(PROJECT_DIR,"memory","personal.json")
 
 TIMEZONE         = ZoneInfo(os.getenv("TIMEZONE", "Europe/Berlin"))
 SILENT_START     = 22

@@ -107,7 +107,7 @@ load_dotenv()
 WORKSPACE     = os.path.join(PROJECT_DIR, "workspace")
 MEMORY_DIR    = os.path.join(PROJECT_DIR, "memory")
 LOG_DIR       = os.path.join(PROJECT_DIR, "logs")
-PERSONAL_FILE = os.path.join(MEMORY_DIR, "personal.json")
+PERSONAL_FILE = os.path.join(PROJECT_DIR, "personal.json")
 
 # ── Custom Actions Pfad (core/custom_actions.json) ──────────────
 CUSTOM_ACTIONS_FILE = os.path.join(PROJECT_DIR, "core", "custom_actions.json")
@@ -396,6 +396,9 @@ class PersonalMemory:
             data.setdefault("basisinfo", {})["name"] = name
             self._write(data)
             print(f"🧠 basisinfo.name aus system_prompt initialisiert: {name}")
+
+    def delete_fact(self, id_or_key) -> bool:
+        """Löscht einen Fakt per Nummer (ID) oder Key. Gibt True zurück wenn gefunden."""
         data   = self._read()
         fakten = data.get("fakten", [])
         # Erst per ID versuchen
@@ -958,13 +961,14 @@ Nur JSON:"""
             discord_section = f"\n{dc}"
 
         # 6. System Message
-        now_str        = self.brain.get_now().strftime("%d.%m.%Y %H:%M") if self.brain else ""
+        now_str        = self.brain.get_now().strftime("%d.%m.%Y %H:%M") if self.brain else datetime.now().strftime("%d.%m.%Y %H:%M")
         brain_section  = f"\n### BRAIN:\n{brain_data}"        if brain_data and brain_data != "KEINE DATEN" else ""
         memory_section = f"\n### GEDÄCHTNIS:\n{past_context}" if past_context else ""
 
         system_msg = f"""{self.system_prompt}
 
-ZEIT: {now_str}
+━━━ AKTUELLE ZEIT: {now_str} ━━━
+(Diese Zeit ist verbindlich — verwende sie für alle zeitbezogenen Aussagen.)
 
 {personal_text}{brain_section}{memory_section}{brain_file_section}{discord_section}"""
 

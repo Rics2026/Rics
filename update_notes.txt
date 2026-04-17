@@ -1,7 +1,7 @@
-Update 1.5
-- bot.py benutzt bei gesrpächen Zeitberechnung
-- practive_brain.py Markdown fehler behoben
-- alle Module nutzen jetzt Deepseek - Groq - Lokal Ollama
+Update 1.5.1
+- self_reflexion.py 
+- practive_brain.py 
+
 Coming Soon
 - Code_Editor.py -- kann .py im ordner memory/brain bearbeiten
 - timer.py       -- startet timer xx minuten

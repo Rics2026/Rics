@@ -107,7 +107,7 @@ load_dotenv()
 WORKSPACE     = os.path.join(PROJECT_DIR, "workspace")
 MEMORY_DIR    = os.path.join(PROJECT_DIR, "memory")
 LOG_DIR       = os.path.join(PROJECT_DIR, "logs")
-PERSONAL_FILE = os.path.join(PROJECT_DIR, "personal.json")
+PERSONAL_FILE = os.path.join(PROJECT_DIR,"memory", "personal.json")
 
 # ── Custom Actions Pfad (core/custom_actions.json) ──────────────
 CUSTOM_ACTIONS_FILE = os.path.join(PROJECT_DIR, "core", "custom_actions.json")

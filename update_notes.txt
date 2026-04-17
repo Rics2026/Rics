@@ -1,5 +1,5 @@
-Update 1.1
-- Web_app.py Button_Conatiner FIX
+Update 1.2
+- Discord_manager.py fix Bot reagiert auf Bot
 
 Coming Soon
 - Code_Editor.py -- kann .py im ordner memory/brain bearbeiten

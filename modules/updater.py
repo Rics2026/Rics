@@ -206,30 +206,30 @@ async def restart_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await asyncio.sleep(1)
 
-    # ── KRITISCH: alle geerbten FDs schließen ───────────────────
-    # Sonst bleibt der Flask-Listening-Socket (Port 5001) im neuen
-    # Prozess offen → "Address already in use".
-    # os.execv() behält die PID bei, daher greift _free_web_port()
-    # im neuen Prozess nicht (PID-Check schlägt fehl).
-    try:
-        import resource
-        max_fds = resource.getrlimit(resource.RLIMIT_NOFILE)[0]
-        if max_fds > 4096 or max_fds < 0:
-            max_fds = 4096
-    except Exception:
-        max_fds = 4096
+    # ── Neuen Bot-Prozess starten (komplett frisch, neue PID) ──
+    # subprocess.Popen mit close_fds=True vererbt keine File-Descriptors.
+    # start_new_session=True macht den neuen Prozess unabhängig vom alten.
+    # Das ist sauberer als os.execv() weil:
+    #  - Neue PID
+    #  - Keine inherited Sockets (insbesondere Flask-Port 5001)
+    #  - Kein FD-Vererbungs-Problem
+    import subprocess
+    bot_path = os.path.join(PROJECT_DIR, "bot.py")
 
-    # stdin(0), stdout(1), stderr(2) behalten — alle anderen zu
-    for fd in range(3, max_fds):
-        try:
-            os.close(fd)
-        except OSError:
-            pass
+    subprocess.Popen(
+        [sys.executable, bot_path],
+        cwd=PROJECT_DIR,
+        close_fds=True,
+        start_new_session=True,
+        stdin=subprocess.DEVNULL,
+    )
 
-    os.execv(sys.executable, [
-        sys.executable,
-        os.path.join(PROJECT_DIR, "bot.py")
-    ])
+    # ── Alten Prozess hart beenden ─────────────────────────────
+    # os._exit() statt sys.exit() — überspringt Python-Cleanup,
+    # schließt aber alle Sockets via Kernel-Exit.
+    # Flask-Listening-Socket wird sofort frei (kein TIME_WAIT weil
+    # keine aktiven Verbindungen auf dem Listen-Socket).
+    os._exit(0)
 
 
 # ─────────────────────────────────────────

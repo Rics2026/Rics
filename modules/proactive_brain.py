@@ -2,12 +2,14 @@
 # -*- coding: utf-8 -*-
 
 import os
+import re
 import json
 import importlib
 import asyncio
 import psutil
 import random
 import time
+import httpx
 from datetime import datetime
 from dotenv import load_dotenv
 from telegram.ext import ContextTypes, CommandHandler, CallbackQueryHandler
@@ -18,7 +20,13 @@ import ollama
 
 load_dotenv()
 
-BOT_NAME = os.getenv("BOT_NAME", "RICS")
+BOT_NAME         = os.getenv("BOT_NAME", "RICS")
+DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
+DEEPSEEK_MODEL   = "deepseek-chat"
+DEEPSEEK_URL     = "https://api.deepseek.com/v1/chat/completions"
+GROQ_API_KEY     = os.getenv("GROQ_API_KEY", "")
+GROQ_MODEL       = "llama-3.3-70b-versatile"
+GROQ_URL         = "https://api.groq.com/openai/v1/chat/completions"
 
 def _web_push(msg: str):
     """Sendet Nachricht an Webchat falls offen."""
@@ -137,7 +145,7 @@ def update_interests_from_chat(chat_messages: list):
         "wetter":          ["wetter", "regnet", "regen", "wolkig", "gewitter", "schnee",
                             "wettervorhersage", "niederschlag", "hagel"],
         "arbeit":          ["landratsamt", "veterinär", "amt", "büro", "kollege"],
-        "familie":         ["heike", "melissa", "josefine", "oliver", "stas"],
+        "familie":         [],   # wird zur Laufzeit aus personal.json befüllt
         "benzin":          ["benzin", "tanken", "diesel", "sprit", "tankstelle", "e5", "e10"],
         "hobby":           ["hobby", "basteln", "3d druck", "drucken", "modell", "spiel", "lego",
                             "angeln", "fahrrad", "radfahren", "musik", "gitarre", "zeichnen"],
@@ -159,6 +167,23 @@ def update_interests_from_chat(chat_messages: list):
     }
     interests = load_interests()
     now_iso = datetime.now().isoformat()
+
+    # Familie-Keywords dynamisch aus personal.json befüllen
+    try:
+        with open(PERSONAL_FILE, "r", encoding="utf-8") as _pf:
+            _pd = json.load(_pf)
+        _names = []
+        if _pd.get("partner", {}).get("name"):
+            _names.append(_pd["partner"]["name"].lower())
+        for _k in _pd.get("kinder", []):
+            if _k.get("name"): _names.append(_k["name"].lower())
+        for _f in _pd.get("fakten", []):
+            if _f.get("key") in ("bester_freund", "freund", "freundin"):
+                _names.append(_f["value"].lower())
+        if _names:
+            TOPIC_KEYWORDS["familie"] = _names
+    except Exception:
+        pass
 
     # Alle Topics initialisieren
     for topic in TOPIC_KEYWORDS:
@@ -493,18 +518,47 @@ async def _check_vision_memory(brain: Brain, name: str, now_str: str) -> str | N
     return None
 
 async def _llm(prompt: str) -> str:
+    msgs = [{"role": "user", "content": prompt}]
+    # 1) DeepSeek
+    if DEEPSEEK_API_KEY:
+        try:
+            loop = asyncio.get_event_loop()
+            r = await loop.run_in_executor(None, lambda: httpx.post(
+                DEEPSEEK_URL,
+                headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"},
+                json={"model": DEEPSEEK_MODEL, "messages": msgs, "max_tokens": 350, "temperature": 0.85},
+                timeout=30))
+            if r.status_code == 200:
+                return r.json()["choices"][0]["message"]["content"].strip()
+        except Exception as e:
+            print(f"[proactive_brain] DeepSeek: {e}")
+    # 2) Groq
+    if GROQ_API_KEY:
+        try:
+            loop = asyncio.get_event_loop()
+            r = await loop.run_in_executor(None, lambda: httpx.post(
+                GROQ_URL,
+                headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
+                json={"model": GROQ_MODEL, "messages": msgs, "max_tokens": 350, "temperature": 0.85},
+                timeout=30))
+            if r.status_code == 200:
+                return r.json()["choices"][0]["message"]["content"].strip()
+        except Exception as e:
+            print(f"[proactive_brain] Groq: {e}")
+    # 3) Ollama
     try:
         loop = asyncio.get_event_loop()
-        res  = await loop.run_in_executor(
+        res = await loop.run_in_executor(
             None,
             lambda: ollama.chat(
                 model=os.getenv("OLLAMA_MODEL", "qwen3:8b"),
-                messages=[{"role": "user", "content": prompt}]
+                messages=msgs
             )
         )
-        return res['message']['content'].strip()
+        text = res['message']['content'].strip()
+        return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip() if "<think>" in text else text
     except Exception as e:
-        print(f"LLM Fehler: {e}")
+        print(f"[proactive_brain] LLM Fehler: {e}")
         return ""
 
 # ══════════════════════════════════════════════════════════

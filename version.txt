@@ -1,4 +1,4 @@
-Version 1.2
+Version 1.3
 modules/proactive_brain.py
 modules/discord_manager.py
 modules/web_app.py

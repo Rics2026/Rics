@@ -5,33 +5,71 @@ import os
 import sys
 
 # ═══════════════════════════════════════════════════════════════
-# SOCKET-FD CLEANUP — MUSS vor allen weiteren Imports laufen!
-# Falls via os.execv() gestartet: Werkzeug's Listening-Socket auf
-# Port 5001 wird ohne CLOEXEC vererbt → "Address already in use".
-# Wir schließen deshalb gezielt nur Socket-FDs — andere File-FDs
-# (z.B. /dev/urandom das Python intern nutzt) bleiben offen,
-# sonst crasht Python beim Import von ssl/hashlib.
+# WATCHDOG MODE — Selbst-Restart ohne FD-Vererbungsprobleme
+# ───────────────────────────────────────────────────────────────
+# Wenn bot.py normal gestartet wird (python bot.py), wird dieser
+# Prozess zum WATCHDOG. Er startet sich selbst als Child mit
+# RICS_CHILD=1. Der Child ist der echte Bot.
+#
+# Exit-Codes vom Child:
+#   42 → Restart (vom /update-Befehl ausgelöst)
+#    0 → Clean shutdown, Watchdog beendet sich auch
+#   * → Crash, Watchdog startet nach 5s neu
+#
+# Vorteil: Jeder Restart ist ein komplett frischer subprocess.
+# Kein FD-Vererbungsproblem → Flask-Port immer frei.
 # ═══════════════════════════════════════════════════════════════
-import stat as _stat
-try:
-    import resource as _res
-    _MAX_FD = _res.getrlimit(_res.RLIMIT_NOFILE)[0]
-    if _MAX_FD > 4096 or _MAX_FD < 0:
-        _MAX_FD = 4096
-except Exception:
-    _MAX_FD = 4096
+if os.getenv("RICS_CHILD") != "1":
+    import subprocess as _sp
+    import time as _t
+    import signal as _sig
 
-for _fd in range(3, _MAX_FD):
-    try:
-        _st = os.fstat(_fd)
-        if _stat.S_ISSOCK(_st.st_mode):
-            os.close(_fd)
-    except OSError:
-        pass
-try:
-    del _fd, _st, _MAX_FD, _res, _stat
-except NameError:
-    pass
+    _PROJECT = os.path.abspath(os.path.dirname(__file__))
+    print("🛡️  RICS Watchdog aktiv (PID " + str(os.getpid()) + ")")
+
+    # SIGINT/SIGTERM an Child weiterleiten
+    _child_proc = {"p": None}
+
+    def _forward_signal(signum, frame):
+        p = _child_proc["p"]
+        if p and p.poll() is None:
+            try:
+                p.send_signal(signum)
+            except Exception:
+                pass
+
+    _sig.signal(_sig.SIGINT,  _forward_signal)
+    _sig.signal(_sig.SIGTERM, _forward_signal)
+
+    while True:
+        env = os.environ.copy()
+        env["RICS_CHILD"] = "1"
+        try:
+            p = _sp.Popen([sys.executable, __file__], env=env, cwd=_PROJECT)
+            _child_proc["p"] = p
+            rc = p.wait()
+        except KeyboardInterrupt:
+            if _child_proc["p"]:
+                try:
+                    _child_proc["p"].wait(timeout=5)
+                except Exception:
+                    pass
+            sys.exit(0)
+
+        if rc == 42:
+            print("♻️  Watchdog: Restart angefordert — starte neu in 2s...")
+            _t.sleep(2)
+            continue
+        elif rc == 0:
+            print("👋 Watchdog: Sauberer Exit.")
+            sys.exit(0)
+        else:
+            print(f"❌ Watchdog: Bot crashed (exit {rc}) — restart in 5s...")
+            _t.sleep(5)
+
+# ═══════════════════════════════════════════════════════════════
+# Ab hier: wir sind der CHILD-Prozess (der echte Bot)
+# ═══════════════════════════════════════════════════════════════
 
 import json
 import subprocess
@@ -1257,19 +1295,15 @@ def _start_setup_mode():
 
 def _free_web_port():
     """
-    Macht den Web-Port frei vor dem Start.
-
-    Behandelt 3 Fälle:
-    1. Fremder Prozess hält den Port  → killen
-    2. Eigene PID hält den Port (nach os.execv — FD-Vererbung)
-       → aktiv versuchen zu binden mit SO_REUSEADDR, bis es klappt
-    3. Port ist frei → direkt raus
+    Killt fremde Prozesse die den Web-Port belegen.
+    Mit Watchdog-Pattern ist der Port normalerweise frei zwischen
+    Restarts. Dies ist Belt-and-Suspenders für Fremdprozesse.
     """
     import signal, socket, time
     port = int(os.getenv("WEB_PORT", 5001))
     own  = os.getpid()
 
-    # ── Phase 1: fremde Prozesse killen ──────────────────────────
+    # Fremde Prozesse killen
     try:
         out = subprocess.check_output(
             ["lsof", "-ti", f"tcp:{port}"], stderr=subprocess.DEVNULL
@@ -1286,27 +1320,6 @@ def _free_web_port():
             time.sleep(1)
     except (subprocess.CalledProcessError, FileNotFoundError, ValueError):
         pass
-
-    # ── Phase 2: Port wirklich bindbar? (Retry bis 10s) ──────────
-    for attempt in range(20):
-        try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            try:
-                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
-            except (AttributeError, OSError):
-                pass
-            s.bind(("0.0.0.0", port))
-            s.close()
-            if attempt > 0:
-                print(f"✅ Port {port} nach {attempt*0.5:.1f}s freigegeben")
-            return
-        except OSError as e:
-            if attempt == 0:
-                print(f"⏳ Port {port} noch belegt ({e}) — warte...")
-            time.sleep(0.5)
-
-    print(f"❌ Port {port} nach 10s immer noch belegt — starte trotzdem")
 
 
 def main():

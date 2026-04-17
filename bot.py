@@ -5,14 +5,14 @@ import os
 import sys
 
 # ═══════════════════════════════════════════════════════════════
-# FD CLEANUP — MUSS vor allen weiteren Imports laufen!
-# Falls via os.execv() gestartet wurden inherited File-Descriptors
-# geerbt (u.a. der Flask-Listening-Socket auf Port 5001).
-# Werkzeug setzt kein CLOEXEC → der Socket bleibt auch nach execv
-# offen → "Address already in use" beim Neustart.
-# Wir schließen deshalb alle FDs > 2 (stdin/stdout/stderr bleiben).
-# Bei normalem Start (python bot.py) gibt es nichts zu schließen.
+# SOCKET-FD CLEANUP — MUSS vor allen weiteren Imports laufen!
+# Falls via os.execv() gestartet: Werkzeug's Listening-Socket auf
+# Port 5001 wird ohne CLOEXEC vererbt → "Address already in use".
+# Wir schließen deshalb gezielt nur Socket-FDs — andere File-FDs
+# (z.B. /dev/urandom das Python intern nutzt) bleiben offen,
+# sonst crasht Python beim Import von ssl/hashlib.
 # ═══════════════════════════════════════════════════════════════
+import stat as _stat
 try:
     import resource as _res
     _MAX_FD = _res.getrlimit(_res.RLIMIT_NOFILE)[0]
@@ -23,11 +23,13 @@ except Exception:
 
 for _fd in range(3, _MAX_FD):
     try:
-        os.close(_fd)
+        _st = os.fstat(_fd)
+        if _stat.S_ISSOCK(_st.st_mode):
+            os.close(_fd)
     except OSError:
         pass
 try:
-    del _fd, _MAX_FD, _res
+    del _fd, _st, _MAX_FD, _res, _stat
 except NameError:
     pass
 

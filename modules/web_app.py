@@ -2216,29 +2216,53 @@ def setup(app_instance, event_bus_instance=None):
     delay = float(os.getenv("WEB_START_DELAY", "2"))
 
     def _run_flask():
-        import socket, time
+        import socket, time, subprocess, signal, os as _os
         from werkzeug.serving import make_server
+
+        def _free_port(p):
+            try:
+                out = subprocess.check_output(
+                    ["lsof", "-ti", f"tcp:{p}"], stderr=subprocess.DEVNULL
+                ).decode().strip()
+                for pid_str in out.splitlines():
+                    pid = int(pid_str.strip())
+                    if pid != _os.getpid():
+                        logger.warning(f"\u26a0\ufe0f  Killing PID {pid} auf Port {p}")
+                        try: _os.kill(pid, signal.SIGTERM)
+                        except ProcessLookupError: pass
+            except (subprocess.CalledProcessError, FileNotFoundError):
+                try:
+                    subprocess.call(["fuser", "-k", f"{p}/tcp"],
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                except FileNotFoundError:
+                    pass
+
         if delay > 0:
             time.sleep(delay)
-        for attempt in range(10):
+
+        _free_port(port)
+        time.sleep(1)
+
+        for attempt in range(5):
             try:
                 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                 sock.bind(("0.0.0.0", port))
-                srv = make_server("0.0.0.0", port, app, threaded=True, fd=sock.fileno())
-                srv.serve_forever()
+                try:
+                    srv = make_server("0.0.0.0", port, app, threaded=True, fd=sock.fileno())
+                    srv.serve_forever()
+                except TypeError:
+                    sock.close()
+                    app.run(host="0.0.0.0", port=port, threaded=True, use_reloader=False)
                 return
             except OSError as e:
                 sock.close()
                 if e.errno in (48, 98):
-                    logger.warning(f"\u26a0\ufe0f  Port {port} belegt, warte\u2026 (Versuch {attempt+1}/10)")
+                    logger.warning(f"\u26a0\ufe0f  Port {port} noch belegt, warte... (Versuch {attempt+1}/5)")
                     time.sleep(2)
                 else:
                     raise
-            except TypeError:
-                sock.close()
-                app.run(host="0.0.0.0", port=port, threaded=True, use_reloader=False)
-                return
+        logger.error(f"\u274c Port {port} konnte nicht freigegeben werden.")
 
     threading.Thread(target=_run_flask, daemon=True).start()
     logger.info(f"🌐 {os.getenv('BOT_NAME', 'RICS')} Web Interface: http://localhost:{port} (Delay: {delay}s)")

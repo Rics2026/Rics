@@ -1,5 +1,7 @@
-Update 1.2
+Update 1.3
 - Discord_manager.py fix Bot reagiert auf Bot
+- Bot.py fix für Bot restart, Port clear add start
+- practive_brain.py Markdown fehler behoben
 
 Coming Soon
 - Code_Editor.py -- kann .py im ordner memory/brain bearbeiten

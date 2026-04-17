@@ -3,6 +3,34 @@
 
 import os
 import sys
+
+# ═══════════════════════════════════════════════════════════════
+# FD CLEANUP — MUSS vor allen weiteren Imports laufen!
+# Falls via os.execv() gestartet wurden inherited File-Descriptors
+# geerbt (u.a. der Flask-Listening-Socket auf Port 5001).
+# Werkzeug setzt kein CLOEXEC → der Socket bleibt auch nach execv
+# offen → "Address already in use" beim Neustart.
+# Wir schließen deshalb alle FDs > 2 (stdin/stdout/stderr bleiben).
+# Bei normalem Start (python bot.py) gibt es nichts zu schließen.
+# ═══════════════════════════════════════════════════════════════
+try:
+    import resource as _res
+    _MAX_FD = _res.getrlimit(_res.RLIMIT_NOFILE)[0]
+    if _MAX_FD > 4096 or _MAX_FD < 0:
+        _MAX_FD = 4096
+except Exception:
+    _MAX_FD = 4096
+
+for _fd in range(3, _MAX_FD):
+    try:
+        os.close(_fd)
+    except OSError:
+        pass
+try:
+    del _fd, _MAX_FD, _res
+except NameError:
+    pass
+
 import json
 import subprocess
 import importlib
@@ -1226,14 +1254,24 @@ def _start_setup_mode():
 
 
 def _free_web_port():
-    """Killt Prozesse die den Web-Port belegen (außer sich selbst)."""
-    import signal
+    """
+    Macht den Web-Port frei vor dem Start.
+
+    Behandelt 3 Fälle:
+    1. Fremder Prozess hält den Port  → killen
+    2. Eigene PID hält den Port (nach os.execv — FD-Vererbung)
+       → aktiv versuchen zu binden mit SO_REUSEADDR, bis es klappt
+    3. Port ist frei → direkt raus
+    """
+    import signal, socket, time
     port = int(os.getenv("WEB_PORT", 5001))
+    own  = os.getpid()
+
+    # ── Phase 1: fremde Prozesse killen ──────────────────────────
     try:
         out = subprocess.check_output(
             ["lsof", "-ti", f"tcp:{port}"], stderr=subprocess.DEVNULL
         ).decode().strip()
-        own = os.getpid()
         for pid_str in out.splitlines():
             pid = int(pid_str.strip())
             if pid != own:
@@ -1243,9 +1281,30 @@ def _free_web_port():
                 except ProcessLookupError:
                     pass
         if out:
-            import time; time.sleep(1)
+            time.sleep(1)
     except (subprocess.CalledProcessError, FileNotFoundError, ValueError):
         pass
+
+    # ── Phase 2: Port wirklich bindbar? (Retry bis 10s) ──────────
+    for attempt in range(20):
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+            except (AttributeError, OSError):
+                pass
+            s.bind(("0.0.0.0", port))
+            s.close()
+            if attempt > 0:
+                print(f"✅ Port {port} nach {attempt*0.5:.1f}s freigegeben")
+            return
+        except OSError as e:
+            if attempt == 0:
+                print(f"⏳ Port {port} noch belegt ({e}) — warte...")
+            time.sleep(0.5)
+
+    print(f"❌ Port {port} nach 10s immer noch belegt — starte trotzdem")
 
 
 def main():

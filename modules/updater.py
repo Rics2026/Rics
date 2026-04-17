@@ -206,30 +206,35 @@ async def restart_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await asyncio.sleep(1)
 
-    # ── Neuen Bot-Prozess starten (komplett frisch, neue PID) ──
-    # subprocess.Popen mit close_fds=True vererbt keine File-Descriptors.
-    # start_new_session=True macht den neuen Prozess unabhängig vom alten.
-    # Das ist sauberer als os.execv() weil:
-    #  - Neue PID
-    #  - Keine inherited Sockets (insbesondere Flask-Port 5001)
-    #  - Kein FD-Vererbungs-Problem
-    import subprocess
-    bot_path = os.path.join(PROJECT_DIR, "bot.py")
+    # ── Nur Socket-FDs schließen vor execv ─────────────────────
+    # Werkzeug setzt kein CLOEXEC auf den Listening-Socket, daher
+    # würde er bei os.execv() vererbt → "Address already in use".
+    # Wichtig: NUR Sockets schließen — wenn wir alle FDs schließen,
+    # crashen Python-Imports (z.B. ssl braucht /dev/urandom).
+    import stat as _stat
+    try:
+        import resource
+        max_fds = resource.getrlimit(resource.RLIMIT_NOFILE)[0]
+        if max_fds > 4096 or max_fds < 0:
+            max_fds = 4096
+    except Exception:
+        max_fds = 4096
 
-    subprocess.Popen(
-        [sys.executable, bot_path],
-        cwd=PROJECT_DIR,
-        close_fds=True,
-        start_new_session=True,
-        stdin=subprocess.DEVNULL,
-    )
+    closed = 0
+    for fd in range(3, max_fds):
+        try:
+            st = os.fstat(fd)
+            if _stat.S_ISSOCK(st.st_mode):
+                os.close(fd)
+                closed += 1
+        except OSError:
+            pass
+    logger.info(f"[Restart] {closed} Socket-FDs geschlossen — execv...")
 
-    # ── Alten Prozess hart beenden ─────────────────────────────
-    # os._exit() statt sys.exit() — überspringt Python-Cleanup,
-    # schließt aber alle Sockets via Kernel-Exit.
-    # Flask-Listening-Socket wird sofort frei (kein TIME_WAIT weil
-    # keine aktiven Verbindungen auf dem Listen-Socket).
-    os._exit(0)
+    os.execv(sys.executable, [
+        sys.executable,
+        os.path.join(PROJECT_DIR, "bot.py")
+    ])
 
 
 # ─────────────────────────────────────────

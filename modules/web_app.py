@@ -32,6 +32,17 @@ import queue as _queue
 _push_clients: list[_queue.Queue] = []   # eine Queue pro offener SSE-Verbindung
 _push_lock = threading.Lock()
 
+# ── FakeContext-Support (geteilt zwischen Command- und Callback-Route) ───
+# user_data/chat_data persistieren modul-global, damit z.B. /models gefolgt
+# von /model 1 dieselbe available_models-Liste sieht (wie in Telegram).
+_web_user_data: dict = {}
+_web_chat_data: dict = {}
+
+# Threading-Flag: wenn aktiv (True), ist gerade ein Web-Handler am Laufen.
+# web_push() unterdrückt dann den Push — sonst kommt die Antwort 2x
+# (einmal inline via /chat-Stream, einmal via /push-stream).
+_in_web_handler = threading.local()
+
 def _push_log_append(text: str):
     """Schreibt Push-Nachricht in die tägliche chat.log."""
     try:
@@ -45,6 +56,11 @@ def _push_log_append(text: str):
 
 def web_push(text: str, buttons=None):
     """Schickt Nachricht an alle Webchat-Verbindungen und persistiert sie."""
+    # Wenn gerade ein Web-Handler läuft (Command oder Callback aus /chat),
+    # unterdrücken — die Antwort kommt bereits inline via /chat-Stream.
+    # Sonst erscheint sie 2x (inline + push).
+    if getattr(_in_web_handler, "active", False):
+        return
     _push_log_append(text)
     if not _push_clients:
         return
@@ -790,26 +806,36 @@ function renderInlineKeyboard(rows) {
   _lastKeyboardId = id;
   var wrap = document.createElement('div');
   wrap.id = id;
-  wrap.style.cssText = 'display:flex;flex-direction:column;gap:.35rem;margin:.3rem 0 .6rem 0';
+  wrap.style.cssText = 'display:flex;flex-direction:column;gap:.35rem;margin:.3rem 0 .6rem 0;touch-action:manipulation;pointer-events:auto';
   rows.forEach(function(row) {
     var rowDiv = document.createElement('div');
     rowDiv.style.cssText = 'display:flex;gap:.4rem;flex-wrap:wrap';
     row.forEach(function(btn) {
       var b = document.createElement('button');
       b.className = 'qbtn';
-      b.style.cssText = 'flex-shrink:0;font-size:.78rem;padding:.5rem .9rem';
+      b.type = 'button';
+      // touch-action:manipulation → verhindert 300ms-Tap-Delay / Double-Tap-Zoom auf iOS
+      // pointer-events:auto + z-index → stellt sicher dass Klicks immer ankommen
+      b.style.cssText = 'flex-shrink:0;font-size:.78rem;padding:.5rem .9rem;touch-action:manipulation;pointer-events:auto;position:relative;z-index:2';
       b.textContent = btn.text;
       if (btn.url) {
-        b.onclick = function(){ window.open(btn.url, '_blank'); };
+        b.addEventListener('click', (function(u){ return function(ev){ ev.preventDefault(); window.open(u, '_blank'); }; })(btn.url));
       } else if (btn.data) {
-        b.onclick = (function(d){ return function(){ sendMsg(d); }; })(btn.data);
+        b.addEventListener('click', (function(d){ return function(ev){ ev.preventDefault(); sendMsg(d); }; })(btn.data));
       }
       rowDiv.appendChild(b);
     });
     wrap.appendChild(rowDiv);
   });
   box.appendChild(wrap);
-  box.scrollTop = box.scrollHeight;
+  // Force reflow — iOS Safari rendert dynamisch eingefügte Buttons sonst
+  // manchmal erst nach externem Layout-Trigger (z.B. Tab-Wechsel). Ohne das
+  // sind die Buttons sichtbar aber der erste Klick wird verschluckt.
+  /* eslint-disable no-unused-expressions */
+  wrap.offsetHeight;
+  requestAnimationFrame(function(){
+    box.scrollTop = box.scrollHeight;
+  });
 }
 
 // ── Clock ──────────────────────────────────────────────────────
@@ -1879,14 +1905,19 @@ def chat():
                     args        = _args
                     application = _app
                     bot         = _app.bot
+                    bot_data    = _app.bot_data     # real: enthält jarvis, brain, etc.
+                    user_data   = _web_user_data    # modul-global (persistiert)
+                    chat_data   = _web_chat_data    # modul-global (persistiert)
 
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
+                _in_web_handler.active = True
                 try:
                     loop.run_until_complete(_cb(FakeUpdate(), FakeContext()))
                 except Exception as e:
                     collected.append(f"❌ Fehler bei /{_cmd}: {e}")
                 finally:
+                    _in_web_handler.active = False
                     loop.close()
 
                 result = "\n".join(collected) if collected else f"✅ /{_cmd} ausgeführt."
@@ -1976,14 +2007,19 @@ def chat():
                     args        = []
                     application = _app
                     bot         = _app.bot
+                    bot_data    = _app.bot_data     # real: enthält jarvis, brain, etc.
+                    user_data   = _web_user_data    # modul-global (persistiert)
+                    chat_data   = _web_chat_data    # modul-global (persistiert)
 
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
+                _in_web_handler.active = True
                 try:
                     loop.run_until_complete(_cb(FakeUpdate(), FakeContext()))
                 except Exception as e:
                     collected.append(f"❌ Fehler: {e}")
                 finally:
+                    _in_web_handler.active = False
                     loop.close()
 
                 result = "\n".join(collected) if collected else ""

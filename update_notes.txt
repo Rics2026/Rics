@@ -1,4 +1,5 @@
 Update 1.5.5
+- system - agent_prompt Namen User und Bot durch .env einträger ersetzt
 - agenda.py Neue Tägliche Erinnerung
   /erinnerung — Tägl. Erinnerung hinzufügen (z.B. /erinnerung 16:00 Singen Üben)
   /erinnerung_del — Tägliche Erinnerung löschen (z.B. /erinnerung_del 1)

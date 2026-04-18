@@ -4,7 +4,12 @@ Update 1.6
   /erinnerung — Tägl. Erinnerung hinzufügen (z.B. /erinnerung 16:00 Lernen)
   /erinnerung_del — Tägliche Erinnerung löschen (z.B. /erinnerung_del 1)
   /erinnerungen — Alle täglichen Erinnerungen anzeigen
-  /termin_uhrzeit (8:00) - Zeigt dir deine Agenda Termine an wenn vorhanden!
+  /termin_uhrzeit (8:00) - Zeigt dir deine Agenda Termine an wenn vorhanden!Bsp.
+  ☀️ GUTEN MORGEN – DEINE TERMINE HEUTE
+   ———————————————————
+   1. ⏰ 09:30 — Arzttermin
+   2. ⏰ 14:00 — Meeting mit Klaus
+   📌 2 Termin(e) heute – viel Erfolg!
 - web_app.py Button_container fix
 
 

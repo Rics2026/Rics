@@ -4,6 +4,7 @@ Update 1.6
   /erinnerung — Tägl. Erinnerung hinzufügen (z.B. /erinnerung 16:00 Singen Üben)
   /erinnerung_del — Tägliche Erinnerung löschen (z.B. /erinnerung_del 1)
   /erinnerungen — Alle täglichen Erinnerungen anzeigen
+  /termin_uhrzeit (8:00) - Zeigt die Agenda täglich 
 - web_app.py Button_container fix
 
 

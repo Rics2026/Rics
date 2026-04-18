@@ -1,5 +1,3 @@
 Version 1.5.4
 modules/web_app.py
-modules/self_reflection.py
-modules/proactive_brain.py
-bot.py
+modules/agenda.py

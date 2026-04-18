@@ -772,6 +772,21 @@ Nur JSON:"""
 
         return None
 
+    def _strip_action_block(self, answer: str) -> str:
+        """Entfernt ACTION-Block-Zeilen aus der Antwort für saubere Anzeige."""
+        action_keys = {"action:", "date:", "time:", "text:", "channel:",
+                       "message:", "target:", "query:", "file:", "run:"}
+        lines = answer.splitlines()
+        clean, in_action = [], False
+        for line in lines:
+            low = line.strip().lower()
+            if low.startswith("action:"):
+                in_action = True
+            if in_action and any(low.startswith(k) for k in action_keys):
+                continue
+            clean.append(line)
+        return "\n".join(clean).strip()
+
     async def propose_action(self, update: Update, answer: str,
                              context: ContextTypes.DEFAULT_TYPE = None,
                              user_text: str = "") -> bool:
@@ -1015,10 +1030,21 @@ Nur JSON:"""
 
             # 8. Actions — zeige Preview, warte auf Bestätigung
             if await self.propose_action(update, answer, context, user_text=user_text):
-                try:
-                    await context.bot.delete_message(chat_id=chat_id, message_id=msg_id)
-                except Exception:
-                    pass
+                clean = self._strip_action_block(answer)
+                if clean:
+                    try:
+                        await context.bot.edit_message_text(
+                            chat_id=chat_id, message_id=msg_id, text=clean)
+                    except Exception:
+                        try:
+                            await context.bot.delete_message(chat_id=chat_id, message_id=msg_id)
+                        except Exception:
+                            pass
+                else:
+                    try:
+                        await context.bot.delete_message(chat_id=chat_id, message_id=msg_id)
+                    except Exception:
+                        pass
                 return
 
             # 9. Gedächtnis

@@ -1,4 +1,4 @@
-Version 1.5.2
+Version 1.5
 modules/web_app.py
 modules/self_reflection.py
 modules/proactive_brain.py

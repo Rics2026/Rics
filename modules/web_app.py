@@ -134,7 +134,7 @@ def _handle_builtin_command(cmd: str, args: list):
 # ── ENV Config ────────────────────────────────────────────────────────────
 ENV_GROUPS = {
     # ── Bot Grundkonfiguration ──────────────────────────────────────────
-    "🤖 Telegram":      [("TELEGRAM_TOKEN","password"),("CHAT_ID","text"),("BOT_NAME","text")],
+    "🤖 Telegram":      [("TELEGRAM_TOKEN","password"),("CHAT_ID","text"),("BOT_NAME","text"),("USER_NAME","text")],
 
     # ── KI / LLM ───────────────────────────────────────────────────────
     # LLM_PROVIDER steuert den Chat-Provider: deepseek oder groq
@@ -773,6 +773,42 @@ function cancelAction() {
   appendMsg('bot', '❌ Abgebrochen.');
 }
 
+// ── Inline Keyboard Buttons (aus Telegram reply_markup) ──────
+var _lastKeyboardId = null;
+
+function renderInlineKeyboard(rows) {
+  var box = document.getElementById('chatbox');
+  // Altes Keyboard ersetzen (Telegram-Verhalten: edit_message_text)
+  if (_lastKeyboardId) {
+    var old = document.getElementById(_lastKeyboardId);
+    if (old) old.remove();
+  }
+  var id = 'kb-' + Date.now();
+  _lastKeyboardId = id;
+  var wrap = document.createElement('div');
+  wrap.id = id;
+  wrap.style.cssText = 'display:flex;flex-direction:column;gap:.35rem;margin:.3rem 0 .6rem 0';
+  rows.forEach(function(row) {
+    var rowDiv = document.createElement('div');
+    rowDiv.style.cssText = 'display:flex;gap:.4rem;flex-wrap:wrap';
+    row.forEach(function(btn) {
+      var b = document.createElement('button');
+      b.className = 'qbtn';
+      b.style.cssText = 'flex-shrink:0;font-size:.78rem;padding:.5rem .9rem';
+      b.textContent = btn.text;
+      if (btn.url) {
+        b.onclick = function(){ window.open(btn.url, '_blank'); };
+      } else if (btn.data) {
+        b.onclick = (function(d){ return function(){ sendMsg(d); }; })(btn.data);
+      }
+      rowDiv.appendChild(b);
+    });
+    wrap.appendChild(rowDiv);
+  });
+  box.appendChild(wrap);
+  box.scrollTop = box.scrollHeight;
+}
+
 // ── Clock ──────────────────────────────────────────────────────
 function updateClock() {
   const el = document.getElementById('clock');
@@ -923,6 +959,9 @@ function sendMsg(cmd) {
               }
               if (j.action_pending) {
                 showActionConfirm(j.action_pending);
+              }
+              if (j.buttons) {
+                renderInlineKeyboard(j.buttons);
               }
               if (j.done) {
                 resetSend();
@@ -1783,12 +1822,25 @@ def chat():
         if handler_cb:
             def _cmd_stream(_cb=handler_cb, _app=tg_app, _args=args, _cmd=cmd):
                 collected = []
+                keyboard_rows = []  # InlineKeyboard-Buttons für Web
 
                 class FakeMessage:
                     text = msg
                     message_id = 0
                     async def reply_text(self, text, **kw):
                         collected.append(str(text))
+                        # InlineKeyboardMarkup extrahieren
+                        markup = kw.get("reply_markup")
+                        if markup and hasattr(markup, "inline_keyboard"):
+                            for row in markup.inline_keyboard:
+                                r = []
+                                for btn in row:
+                                    r.append({
+                                        "text": btn.text,
+                                        "data": getattr(btn, "callback_data", None),
+                                        "url":  getattr(btn, "url", None),
+                                    })
+                                keyboard_rows.append(r)
                     async def reply_chat_action(self, action, **kw):
                         pass
                     async def reply_photo(self, photo, caption=None, **kw):
@@ -1819,11 +1871,113 @@ def chat():
 
                 result = "\n".join(collected) if collected else f"✅ /{_cmd} ausgeführt."
                 yield "data: " + json.dumps({"t": result}) + "\n\n"
+                if keyboard_rows:
+                    yield "data: " + json.dumps({"buttons": keyboard_rows}) + "\n\n"
                 yield "data: " + json.dumps({"done": True}) + "\n\n"
 
             return Response(_cmd_stream(), mimetype="text/event-stream",
                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
         # kein Handler gefunden → LLM übernimmt (fällt durch zu stream_response)
+
+    # ── CallbackQuery Router (Inline-Keyboard Buttons) ─────────────
+    # Callback-Daten aus Inline-Buttons (z.B. "help_cat:…") werden an
+    # den passenden CallbackQueryHandler weitergeleitet — kein LLM nötig.
+    if not msg.startswith("/"):
+        import re as _re_cq
+        from telegram.ext import CallbackQueryHandler as _CQH
+        cq_handler_cb = None
+        tg_app_cq = _telegram_app
+        if tg_app_cq:
+            for group in tg_app_cq.handlers.values():
+                for h in group:
+                    if not isinstance(h, _CQH):
+                        continue
+                    pat = getattr(h, "pattern", None)
+                    matched = False
+                    if pat is None:
+                        matched = True
+                    elif callable(pat) and not hasattr(pat, "match"):
+                        try: matched = bool(pat(msg))
+                        except Exception: pass
+                    else:
+                        try: matched = bool(_re_cq.search(pat if isinstance(pat, str) else pat.pattern, msg))
+                        except Exception: pass
+                    if matched:
+                        cq_handler_cb = h.callback
+                        break
+                if cq_handler_cb:
+                    break
+
+        if cq_handler_cb:
+            def _cq_stream(_cb=cq_handler_cb, _app=tg_app_cq, _data=msg):
+                collected    = []
+                keyboard_rows = []
+
+                class FakeMessage:
+                    message_id = 0
+                    text       = ""
+                    chat_id    = 0
+                    async def reply_text(self, text, **kw):
+                        collected.append(str(text))
+                        markup = kw.get("reply_markup")
+                        if markup and hasattr(markup, "inline_keyboard"):
+                            keyboard_rows.clear()
+                            for row in markup.inline_keyboard:
+                                keyboard_rows.append([{"text": btn.text, "data": getattr(btn, "callback_data", None), "url": getattr(btn, "url", None)} for btn in row])
+
+                class FakeCallbackQuery:
+                    data    = _data
+                    message = FakeMessage()
+                    async def answer(self, *a, **kw):
+                        pass
+                    async def edit_message_text(self, text, **kw):
+                        collected.clear()
+                        collected.append(str(text))
+                        markup = kw.get("reply_markup")
+                        if markup and hasattr(markup, "inline_keyboard"):
+                            keyboard_rows.clear()
+                            for row in markup.inline_keyboard:
+                                keyboard_rows.append([{"text": btn.text, "data": getattr(btn, "callback_data", None), "url": getattr(btn, "url", None)} for btn in row])
+                    async def edit_message_reply_markup(self, reply_markup=None, **kw):
+                        if reply_markup and hasattr(reply_markup, "inline_keyboard"):
+                            keyboard_rows.clear()
+                            for row in reply_markup.inline_keyboard:
+                                keyboard_rows.append([{"text": btn.text, "data": getattr(btn, "callback_data", None), "url": getattr(btn, "url", None)} for btn in row])
+
+                class FakeChat:
+                    id = 0
+
+                class FakeUpdate:
+                    callback_query = FakeCallbackQuery()
+                    effective_chat = FakeChat()
+                    message        = None
+
+                class FakeContext:
+                    args        = []
+                    application = _app
+                    bot         = _app.bot
+
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    loop.run_until_complete(_cb(FakeUpdate(), FakeContext()))
+                except Exception as e:
+                    collected.append(f"❌ Fehler: {e}")
+                finally:
+                    loop.close()
+
+                result = "\n".join(collected) if collected else ""
+                if result:
+                    yield "data: " + json.dumps({"t": result}) + "\n\n"
+                if keyboard_rows:
+                    yield "data: " + json.dumps({"buttons": keyboard_rows}) + "\n\n"
+                if not result and not keyboard_rows:
+                    yield "data: " + json.dumps({"t": "✅ Ausgeführt."}) + "\n\n"
+                yield "data: " + json.dumps({"done": True}) + "\n\n"
+
+            return Response(_cq_stream(), mimetype="text/event-stream",
+                            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+        # kein CQ-Handler → LLM
 
     def stream_response():
         try:

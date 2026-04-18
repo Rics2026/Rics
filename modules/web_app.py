@@ -43,15 +43,12 @@ def _push_log_append(text: str):
     except Exception:
         pass
 
-def web_push(text: str, buttons=None):
+def web_push(text: str):
     """Schickt Nachricht an alle Webchat-Verbindungen und persistiert sie."""
     _push_log_append(text)
     if not _push_clients:
         return
-    payload = {"push": text}
-    if buttons:
-        payload["buttons"] = buttons
-    data = "data: " + json.dumps(payload) + "\n\n"
+    data = "data: " + json.dumps({"push": text}) + "\n\n"
     with _push_lock:
         dead = []
         for q in _push_clients:
@@ -1033,9 +1030,6 @@ document.addEventListener('DOMContentLoaded', function() {
           if (document.hidden && Notification.permission === 'granted') {
             new Notification('RICS', { body: d.push });
           }
-          if (d.buttons) {
-            renderInlineKeyboard(d.buttons);
-          }
         }
       } catch(err) {}
     };
@@ -1830,23 +1824,37 @@ def chat():
                 collected = []
                 keyboard_rows = []  # InlineKeyboard-Buttons für Web
 
+                def _extract_keyboard(kw):
+                    markup = kw.get("reply_markup")
+                    if markup and hasattr(markup, "inline_keyboard"):
+                        for row in markup.inline_keyboard:
+                            r = []
+                            for btn in row:
+                                r.append({
+                                    "text": btn.text,
+                                    "data": getattr(btn, "callback_data", None),
+                                    "url":  getattr(btn, "url", None),
+                                })
+                            keyboard_rows.append(r)
+
+                class FakeMessageSent:
+                    """Returned by reply_text — supports edit_text (in-place replace)."""
+                    async def edit_text(self, text, **kw):
+                        # Letzte Nachricht ersetzen (simuliert Telegram edit_message_text)
+                        if collected:
+                            collected[-1] = str(text)
+                        else:
+                            collected.append(str(text))
+                        _extract_keyboard(kw)
+                    async def delete(self): pass
+
                 class FakeMessage:
                     text = msg
                     message_id = 0
                     async def reply_text(self, text, **kw):
                         collected.append(str(text))
-                        # InlineKeyboardMarkup extrahieren
-                        markup = kw.get("reply_markup")
-                        if markup and hasattr(markup, "inline_keyboard"):
-                            for row in markup.inline_keyboard:
-                                r = []
-                                for btn in row:
-                                    r.append({
-                                        "text": btn.text,
-                                        "data": getattr(btn, "callback_data", None),
-                                        "url":  getattr(btn, "url", None),
-                                    })
-                                keyboard_rows.append(r)
+                        _extract_keyboard(kw)
+                        return FakeMessageSent()
                     async def reply_chat_action(self, action, **kw):
                         pass
                     async def reply_photo(self, photo, caption=None, **kw):

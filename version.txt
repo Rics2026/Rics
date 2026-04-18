@@ -1,4 +1,4 @@
-Version 1.6
+Version 1.5.4
 core/system_prompt.txt
 core/agent_prompt.txt
 bot.py

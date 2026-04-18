@@ -39,7 +39,11 @@ def _web_push(msg: str, buttons=None):
                  for btn in row]
                 for row in buttons
             ]
-        web_push(msg, buttons=web_buttons)
+        try:
+            web_push(msg, buttons=web_buttons)
+        except TypeError:
+            # Fallback: alte web_app.py ohne buttons-Parameter
+            web_push(msg)
     except Exception:
         pass
 

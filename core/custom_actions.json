@@ -1,0 +1,74 @@
+[
+  {
+    "action": "WETTER",
+    "command": "wetter",
+    "label": "",
+    "param": "QUERY",
+    "description": "Aktuelles Wetter für eine Stadt abfragen",
+    "prompt_example": "ACTION: WETTERQUERY: Töging am Inn"
+  },
+  {
+    "action": "WEB",
+    "command": "web",
+    "label": "",
+    "param": "QUERY",
+    "description": "Web-Suche durchführen",
+    "prompt_example": "ACTION: WEBQUERY: Suchbegriff"
+  },
+  {
+    "action": "Internet",
+    "command": "web",
+    "label": "",
+    "param": "QUERY",
+    "description": "Web-Suche durchführen",
+    "prompt_example": "ACTION: WEBQUERY: Suchbegriff"
+  },
+  {
+    "action": "BENZIN",
+    "command": "Benzin",
+    "label": "",
+    "param": "QUERY",
+    "description": "Benzin suche ausführen",
+    "prompt_example": "ACTION: benzinQUERY: Suchbegriff"
+  },
+  {
+    "action": "YOUTUBE",
+    "command": "youtube",
+    "label": "",
+    "param": "QUERY",
+    "description": "YouTube-Video suchen",
+    "prompt_example": "ACTION: YOUTUBEQUERY: Videoname"
+  },
+  {
+    "action": "Dateisystem",
+    "command": "ls",
+    "label": "Dateisystem",
+    "param": "QUERY",
+    "description": "Workspace anzeigen",
+    "prompt_example": "ACTION: lsQuery: Datei anzeigen"
+  },
+  {
+    "action": "Timer",
+    "command": "timer_start",
+    "label": "Timer starten",
+    "param": "QUERY",
+    "description": "Timer Starten",
+    "prompt_example": "ACTION: timer_startquery: Minuten und aussage"
+  },
+  {
+    "action": "Look",
+    "command": "look",
+    "label": "Look Personen suche (Foto)",
+    "param": "QUERY",
+    "description": "/Look Person",
+    "prompt_example": "ACTION: lookquery: personen"
+  },
+  {
+    "action": "erinnerung",
+    "command": "erinnerung",
+    "label": "Tägliche erinnerung",
+    "param": "QUERY",
+    "description": "Tägliche Erinnerung",
+    "prompt_example": "ACTION: erinnerungquery: Zeit + Text"
+  }
+]

@@ -537,8 +537,18 @@ class Jarvis:
         self.memory          = VectorMemory()
         self.chat_history    = []
         self.model           = os.getenv("OLLAMA_MODEL", "qwen3:8b")
-        self.system_prompt   = self.load_file("core/system_prompt.txt")
-        self.agent_prompt    = self.load_file("core/agent_prompt.txt")
+        _bot_name  = os.getenv("BOT_NAME",  "RICS")
+        _user_name = os.getenv("USER_NAME", "Rene")
+        self.system_prompt   = (
+            self.load_file("core/system_prompt.txt")
+            .replace("{BOT_NAME}",  _bot_name)
+            .replace("{USER_NAME}", _user_name)
+        )
+        self.agent_prompt    = (
+            self.load_file("core/agent_prompt.txt")
+            .replace("{BOT_NAME}",  _bot_name)
+            .replace("{USER_NAME}", _user_name)
+        )
         self.event_bus       = event_bus
         self.session_manager = session_manager
         self.brain           = brain

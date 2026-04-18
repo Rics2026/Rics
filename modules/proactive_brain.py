@@ -28,11 +28,18 @@ GROQ_API_KEY     = os.getenv("GROQ_API_KEY", "")
 GROQ_MODEL       = "llama-3.3-70b-versatile"
 GROQ_URL         = "https://api.groq.com/openai/v1/chat/completions"
 
-def _web_push(msg: str):
-    """Sendet Nachricht an Webchat falls offen."""
+def _web_push(msg: str, buttons=None):
+    """Sendet Nachricht an Webchat falls offen — optional mit Inline-Buttons."""
     try:
         from modules.web_app import web_push
-        web_push(msg)
+        web_buttons = None
+        if buttons:
+            web_buttons = [
+                [{"text": btn.text, "data": btn.callback_data or ""}
+                 for btn in row]
+                for row in buttons
+            ]
+        web_push(msg, buttons=web_buttons)
     except Exception:
         pass
 
@@ -773,7 +780,7 @@ async def autonomous_thinker(context: ContextTypes.DEFAULT_TYPE):
                 kb  = [[InlineKeyboardButton("💬 Diskutieren", callback_data="chat")]]
                 await context.bot.send_message(chat_id=chat_id, text=msg,
                     reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
-                _web_push(msg)
+                _web_push(msg, kb)
                 return
 
     # ── P3: SOLAR & WETTER ────────────────────────────────
@@ -825,7 +832,7 @@ async def autonomous_thinker(context: ContextTypes.DEFAULT_TYPE):
             kb = [[InlineKeyboardButton("💬 Diskutieren", callback_data="chat")]]
             await context.bot.send_message(chat_id=chat_id, text=moltbook_thought,
                 reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
-            _web_push(moltbook_thought)
+            _web_push(moltbook_thought, kb)
             return
     except Exception as e:
         print(f"Moltbook Thought Error: {e}")
@@ -853,7 +860,7 @@ async def autonomous_thinker(context: ContextTypes.DEFAULT_TYPE):
                 kb = [[InlineKeyboardButton("💬 Diskutieren", callback_data="chat")]]
                 await context.bot.send_message(chat_id=chat_id,
                     text=f"🌙 {msg}", reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
-                _web_push(f"🌙 {msg}")
+                _web_push(f"🌙 {msg}", kb)
                 return
 
     # ── P6: STRESS-REAKTION (Feature 4) ───────────────────
@@ -893,7 +900,7 @@ async def autonomous_thinker(context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(kb),
             parse_mode='Markdown'
         )
-        _web_push(f"⚡ {action_text}")
+        _web_push(f"⚡ {action_text}", kb)
         return
 
     # ── P7b: INTERESSEN-NACHRICHT (Feature 5) ─────────────
@@ -925,7 +932,7 @@ async def autonomous_thinker(context: ContextTypes.DEFAULT_TYPE):
                 kb = [[InlineKeyboardButton("💬 Diskutieren", callback_data="chat")]]
                 await context.bot.send_message(chat_id=chat_id,
                     text=f"🧠 {msg}", reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
-                _web_push(f"🧠 {msg}")
+                _web_push(f"🧠 {msg}", kb)
                 return
 
 # ── PV: PROAKTIVE FOTO-ERINNERUNG (Feature 6) ────────
@@ -938,7 +945,7 @@ async def autonomous_thinker(context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup(kb),
             parse_mode='Markdown'
         )
-        _web_push(vision_msg)
+        _web_push(vision_msg, kb)
         return
 
 # ── SR: SELF REFLECTION ───────────────────────────────
@@ -987,7 +994,7 @@ async def autonomous_thinker(context: ContextTypes.DEFAULT_TYPE):
                     text="🤔 Hey, bist du da? Ich hab grad einen Gedanken...",
                     reply_markup=InlineKeyboardMarkup(kb)
                 )
-                _web_push("🤔 Hey, bist du da? Ich hab grad einen Gedanken...")
+                _web_push("🤔 Hey, bist du da? Ich hab grad einen Gedanken...", kb)
         else:
             # Regulärer Gedanke mit Diskutieren-Button
             prompt = (
@@ -1003,7 +1010,7 @@ async def autonomous_thinker(context: ContextTypes.DEFAULT_TYPE):
                 kb = [[InlineKeyboardButton("💬 Diskutieren", callback_data="chat")]]
                 await context.bot.send_message(chat_id=chat_id,
                     text=f"💭 {msg}", reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
-                _web_push(f"💭 {msg}")
+                _web_push(f"💭 {msg}", kb)
 
 # ══════════════════════════════════════════════════════════
 # DISKUTIEREN CALLBACK

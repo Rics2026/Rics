@@ -43,12 +43,15 @@ def _push_log_append(text: str):
     except Exception:
         pass
 
-def web_push(text: str):
+def web_push(text: str, buttons=None):
     """Schickt Nachricht an alle Webchat-Verbindungen und persistiert sie."""
     _push_log_append(text)
     if not _push_clients:
         return
-    data = "data: " + json.dumps({"push": text}) + "\n\n"
+    payload = {"push": text}
+    if buttons:
+        payload["buttons"] = buttons
+    data = "data: " + json.dumps(payload) + "\n\n"
     with _push_lock:
         dead = []
         for q in _push_clients:
@@ -1029,6 +1032,9 @@ document.addEventListener('DOMContentLoaded', function() {
           // Browser-Notification wenn Tab nicht fokussiert
           if (document.hidden && Notification.permission === 'granted') {
             new Notification('RICS', { body: d.push });
+          }
+          if (d.buttons) {
+            renderInlineKeyboard(d.buttons);
           }
         }
       } catch(err) {}

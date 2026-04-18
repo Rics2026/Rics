@@ -1,7 +1,6 @@
-Update 1.5.1
+Update 1.5.2
+- web_app.py Button_container fix
 - self_reflexion.py 
 - practive_brain.py 
 
-Coming Soon
-- Code_Editor.py -- kann .py im ordner memory/brain bearbeiten
-- timer.py       -- startet timer xx minuten
+

@@ -1,6 +1,6 @@
-Update 1.5.2
+Update 1.5.5
+- agenda.py Neue Tägliche Erinnerung
 - web_app.py Button_container fix
-- self_reflexion.py 
-- practive_brain.py 
+
 
 

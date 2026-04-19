@@ -1,4 +1,5 @@
-Version 1.7
+Version 1.8
 
+bot.py
 modules/auto_benzin.py
 modules/wetter.py

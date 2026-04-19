@@ -1,7 +1,3 @@
-Version 1.6
-core/system_prompt.txt
-core/agent_prompt.txt
-bot.py
-modules/help.py
-modules/web_app.py
-modules/agenda.py
+Version 1.7
+modules/system_control.py
+modules/orchestrator.py

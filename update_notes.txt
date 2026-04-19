@@ -1,4 +1,5 @@
 Update 1.8
+- updater.py fragt in zukunft erst ob das update installiert werden soll.
 - wetter.py ruft wetter dynamisch nach ortschaft ab(/wetter München = Wetter München oder /wetter = wetter ortschaft auf den settings)
 - auto_benzin.py ruft benzinpreise dynamisch ab (/benzin = ortschaft aus den settings oder /benzin München = Benzinpreise aus München)
 /wetter              → Töging am Inn (aus .env)
@@ -12,4 +13,4 @@ Update 1.8
 /benzin e5 München   → München, nur E5 (Reihenfolge egal)
 
 - bot.py fix für ACTION handler
-- updater.py fragt in zukunft erst ob das update installiert werden soll.
+

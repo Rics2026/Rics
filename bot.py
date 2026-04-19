@@ -942,11 +942,11 @@ Nur JSON:"""
             if any(text_lower == w or text_lower.startswith(w + " ") for w in JA_WORTE):
                 context.user_data.pop("pending_action")
                 await self.execute_pending_action(update.message, context, pending)
-                user_text_log = pending.get("user_text", "")
-                action_note   = f"[ACTION ausgeführt via Ja-Text: {pending.get('type','?')}]"
+                original_answer = pending.get("answer", "")
+                preview_clean   = re.sub(r"<[^>]+>", "", pending.get("preview", "")).strip()
                 self.chat_history.append({"role": "user",      "content": user_text})
-                self.chat_history.append({"role": "assistant",  "content": action_note})
-                self.log_chat(user_text, action_note)
+                self.chat_history.append({"role": "assistant",  "content": original_answer})
+                self.log_chat(user_text, preview_clean)
                 return
             if any(text_lower == w or text_lower.startswith(w) for w in NEIN_WORTE):
                 context.user_data.pop("pending_action")
@@ -1108,15 +1108,16 @@ async def action_confirm_callback(update: Update, context: ContextTypes.DEFAULT_
         await jarvis.execute_pending_action(query.message, context, pending)
 
         # ── Action ins Gedächtnis aufnehmen ──────────────────────
-        # Damit RICS beim nächsten Turn weiß was er getan hat
+        # Originale LLM-Antwort (mit ACTION:-Block) speichern, damit das LLM
+        # beim nächsten Turn das korrekte ACTION-Format in seiner History sieht
+        # und es nicht durch eine verkürzte Note ersetzt.
         user_text_for_history = pending.get("user_text", "")
-        action_type_str       = pending.get("type", "?")
+        original_answer       = pending.get("answer", "")
         preview_clean         = re.sub(r"<[^>]+>", "", pending.get("preview", "")).strip()
-        action_note           = f"[ACTION ausgeführt: {action_type_str} → {preview_clean}]"
         if user_text_for_history:
             jarvis.chat_history.append({"role": "user",      "content": user_text_for_history})
-        jarvis.chat_history.append(    {"role": "assistant", "content": action_note})
-        jarvis.log_chat(user_text_for_history or "[Action]", action_note)
+        jarvis.chat_history.append(    {"role": "assistant", "content": original_answer})
+        jarvis.log_chat(user_text_for_history or "[Action]", preview_clean)
 
     elif query.data == "action_confirm:no":
         context.user_data.pop("pending_action", None)

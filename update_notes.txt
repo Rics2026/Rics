@@ -1,6 +1,6 @@
-Update 1.7
-- orchestrator.py Restart gefixxt über Watchdog
-- system_contorl.py Restart gefixxt über Watchdog
+Update 1.8
+- wetter.py ruft wetter dynamisch nach ortschaft ab(/wetter München = Wetter München oder /wetter = wetter ortschaft auf den settings)
+- auto_benzin.py ruft benzinpreise dynamisch ab (/benzin = ortschaft aus den settings oder /benzin München = Benzinpreise aus München)
 
 
 

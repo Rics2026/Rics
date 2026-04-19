@@ -6,10 +6,10 @@ RICS Updater — GitHub Version (stable)
 ======================================
 - lädt version.txt von GitHub
 - vergleicht Version
-- lädt gelistete Dateien direkt
-- ersetzt lokale Dateien
+- zeigt Update-Info + "Jetzt installieren"-Button
+- erst nach Bestätigung wird heruntergeladen & ersetzt
 - holt update_notes.txt und zeigt sie im Chat
-- Telegram /update + Restart Button (erst NACH den Notes)
+- Restart-Button erscheint nach erfolgreicher Installation
 """
 
 import os
@@ -76,10 +76,42 @@ def _fetch_update_notes() -> str:
 
 
 # ─────────────────────────────────────────
-# CORE UPDATER
+# STUFE 1: NUR PRÜFEN (kein Download)
 # ─────────────────────────────────────────
 
-def check_and_update() -> dict:
+def check_for_updates() -> dict:
+    """Prüft ob ein Update verfügbar ist — lädt nichts herunter."""
+    local_ver = _local_version()
+
+    try:
+        r = requests.get(f"{GITHUB_BASE}/version.txt", timeout=10)
+        r.raise_for_status()
+    except Exception as e:
+        return {"status": "error", "msg": f"GitHub Fehler: {e}"}
+
+    remote_ver, file_list = _parse_version_txt(r.text)
+
+    if remote_ver == local_ver:
+        return {"status": "up_to_date", "version": local_ver}
+
+    # Update Notes vorab holen (nur zur Anzeige)
+    notes = _fetch_update_notes()
+
+    return {
+        "status": "available",
+        "local": local_ver,
+        "remote": remote_ver,
+        "files": file_list,
+        "notes": notes,
+    }
+
+
+# ─────────────────────────────────────────
+# STUFE 2: TATSÄCHLICH INSTALLIEREN
+# ─────────────────────────────────────────
+
+def do_install() -> dict:
+    """Lädt die Update-Dateien herunter und ersetzt sie lokal."""
     local_ver = _local_version()
 
     try:
@@ -119,7 +151,6 @@ def check_and_update() -> dict:
         with open(VERSION_FILE, "w") as f:
             f.write(f"Version {remote_ver}")
 
-    # Update Notes holen (nach erfolgreichem Update)
     notes = _fetch_update_notes()
 
     return {
@@ -133,14 +164,14 @@ def check_and_update() -> dict:
 
 
 # ─────────────────────────────────────────
-# TELEGRAM COMMAND /update
+# TELEGRAM COMMAND /update  → nur Check
 # ─────────────────────────────────────────
 
 async def update_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("🔍 Prüfe auf Updates...")
 
     result = await asyncio.get_event_loop().run_in_executor(
-        None, check_and_update
+        None, check_for_updates
     )
 
     status = result.get("status")
@@ -153,7 +184,52 @@ async def update_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(f"✅ Alles aktuell — Version {result['version']}")
         return
 
-    # ── Update erfolgreich ──
+    # ── Update verfügbar → Infos anzeigen + Button ──
+    file_count = len(result["files"])
+    notes      = result.get("notes", "")
+
+    text = (
+        f"🆕 <b>Update verfügbar!</b>\n"
+        f"Version {result['local']} → <b>{result['remote']}</b>\n\n"
+        f"📦 <b>{file_count} Datei(en) werden aktualisiert</b>"
+    )
+
+    if notes:
+        text += f"\n\n📋 <b>Was ist neu:</b>\n{notes}"
+
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("⬇️ Jetzt installieren", callback_data="updater:install"),
+        InlineKeyboardButton("❌ Abbrechen",           callback_data="updater:cancel"),
+    ]])
+
+    await msg.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
+
+
+# ─────────────────────────────────────────
+# INSTALL CALLBACK → tatsächliche Installation
+# ─────────────────────────────────────────
+
+async def install_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    await query.edit_message_text("⬇️ Installation läuft...")
+
+    result = await asyncio.get_event_loop().run_in_executor(
+        None, do_install
+    )
+
+    status = result.get("status")
+
+    if status == "error":
+        await query.edit_message_text(f"❌ Fehler:\n{result['msg']}")
+        return
+
+    if status == "up_to_date":
+        await query.edit_message_text(f"✅ War bereits aktuell — Version {result['version']}")
+        return
+
+    # ── Installation erfolgreich ──
     updated_list = "\n".join(f"• {f}" for f in result["updated"])
     failed_list  = "\n".join(f"• {f}" for f in result["failed"]) if result["failed"] else ""
     notes        = result.get("notes", "")
@@ -173,7 +249,6 @@ async def update_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ── In Webchat pushen ──
     try:
         from modules.web_app import web_push
-        # Plaintext-Version für den Webchat (kein HTML)
         plain = (
             f"🚀 Update installiert! Version {result['old']} → {result['new']}\n\n"
             f"Aktualisierte Dateien:\n{updated_list}"
@@ -191,7 +266,17 @@ async def update_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         InlineKeyboardButton("♻️ Kernel neu starten", callback_data="updater:restart")
     ]])
 
-    await msg.edit_text(text, parse_mode="HTML", reply_markup=keyboard)
+    await query.edit_message_text(text, parse_mode="HTML", reply_markup=keyboard)
+
+
+# ─────────────────────────────────────────
+# CANCEL CALLBACK
+# ─────────────────────────────────────────
+
+async def cancel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text("❌ Update abgebrochen.")
 
 
 # ─────────────────────────────────────────
@@ -207,21 +292,19 @@ async def restart_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await asyncio.sleep(1)
 
     # ── Exit-Code 42 → Watchdog in bot.py startet neuen Prozess ──
-    # bot.py läuft im Watchdog-Mode und startet sich selbst als Child.
-    # Bei Exit-Code 42 startet der Watchdog den Child neu — mit
-    # komplett frischer PID und ohne vererbte FDs. Das vermeidet
-    # das Flask-Port-Problem komplett.
     os._exit(42)
 
 
 # ─────────────────────────────────────────
 # SETUP
 # ─────────────────────────────────────────
-update_command.description = "Prüft GitHub auf Updates und installiert sie"
+update_command.description = "Prüft GitHub auf Updates und fragt vor Installation"
 update_command.category = "LLM"
 
 def setup(app):
     app.add_handler(CommandHandler("update", update_command))
+    app.add_handler(CallbackQueryHandler(install_callback, pattern="^updater:install$"))
+    app.add_handler(CallbackQueryHandler(cancel_callback,  pattern="^updater:cancel$"))
     app.add_handler(CallbackQueryHandler(restart_callback, pattern="^updater:restart$"))
 
     logger.info("[Updater] ✅ GitHub Updater geladen")

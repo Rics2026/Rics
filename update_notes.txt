@@ -11,4 +11,4 @@ Update 1.8
 /benzin München e5   → München, nur E5
 /benzin e5 München   → München, nur E5 (Reihenfolge egal)
 
-
+- bot.py fix für ACTION handler

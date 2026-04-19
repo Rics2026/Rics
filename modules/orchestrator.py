@@ -1,0 +1,860 @@
+import os
+import re
+import json
+import asyncio
+import subprocess
+import sys
+import html
+import hashlib
+import httpx
+from dotenv import load_dotenv
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ContextTypes, CommandHandler, CallbackQueryHandler
+
+load_dotenv()
+
+BOT_NAME   = os.getenv("BOT_NAME", "RICS")
+DS_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
+DS_URL     = "https://api.deepseek.com/v1/chat/completions"
+DS_MODEL   = "deepseek-chat"
+
+PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+WORKSPACE   = os.path.join(PROJECT_DIR, "workspace")
+MODULES_DIR = os.path.join(PROJECT_DIR, "modules")
+os.makedirs(WORKSPACE, exist_ok=True)
+os.makedirs(MODULES_DIR, exist_ok=True)
+
+# ─────────────────────────────────────────────
+# SYSTEM-PROMPT FÜR BUILDER-MODE
+# Erzeugt vollständige, direkt installierbare Telegram-Module
+# ─────────────────────────────────────────────
+BUILDER_SYSTEM = """Du bist RICS, ein autonomer KI-Agent auf macOS.
+Deine Aufgabe: Schreibe vollständige, sofort lauffähige Python-Module für einen Telegram-Bot.
+
+REGELN (ABSOLUT PFLICHT):
+1. Antworte NUR mit reinem Python-Code — kein Markdown, keine Backticks, keine Erklärungen.
+2. Das Modul muss SOFORT importierbar und nutzbar sein.
+3. ALLE Telegram-Imports müssen enthalten sein.
+4. JEDE Funktion braucht vollständiges Fehlerhandling mit try/except.
+5. Rückgaben immer als lesbarer deutscher Text formatiert.
+6. setup(app) MUSS am Ende stehen und ALLE Handler registrieren.
+7. Metadaten (description, category) für jede Handler-Funktion.
+
+ERLAUBTE KATEGORIE-WERTE (wähle den passendsten):
+- "KI"          → KI-Funktionen, Agenten, Modelle
+- "Gedächtnis"  → Erinnerungen, Notizen, Wissen
+- "Agenda"      → Kalender, Termine, Erinnerungen, Planung
+- "Briefing"    → Zusammenfassungen, Tagesberichte
+- "Jobs"        → Cronjobs, geplante Aufgaben
+- "Monitor"     → Überwachung, Alerts, Status
+- "Wetter"      → Wetterdaten, Forecast
+- "Energie"     → Solar, Strom, Verbrauch
+- "Autonom"     → Autonome Prozesse
+- "Discord"     → Discord-Integration
+- "Social"      → Social Media
+- "Content"     → Inhalte, Medien, YouTube
+- "Vision"      → Bildanalyse, Screenshots
+- "Recherche"   → Websuche, Daten sammeln
+- "System"      → Systemsteuerung, macOS
+- "LLM"         → Sprachmodelle, APIs
+- "Finance"     → Finanzen, PayPal, Preise
+
+PFLICHT-STRUKTUR für jedes Modul:
+```
+import os, re, subprocess, json
+from telegram import Update
+from telegram.ext import ContextTypes, CommandHandler
+
+async def main_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # Argument-Parsing
+    args = context.args or []
+    sub = args[0].lower() if args else ""
+    
+    if sub == "heute":
+        result = get_today()
+    elif sub == "erstellen":
+        result = create_item(args[1:])
+    else:
+        result = "Verfügbare Befehle: ..."
+    
+    await update.message.reply_text(result)
+
+def get_today() -> str:
+    try:
+        # Implementierung
+        return "Ergebnis"
+    except Exception as e:
+        return f"❌ Fehler: {e}"
+
+def create_item(args: list) -> str:
+    try:
+        # Parameter aus args parsen
+        params = {}
+        for arg in args:
+            if "=" in arg:
+                k, v = arg.split("=", 1)
+                params[k.strip()] = v.strip()
+        # Implementierung
+        return "✅ Erstellt"
+    except Exception as e:
+        return f"❌ Fehler: {e}"
+
+main_handler.description = "Kurze Beschreibung"
+main_handler.category = "Kategorie"
+
+def setup(app):
+    app.add_handler(CommandHandler("befehl", main_handler))
+```
+
+FÜR APPLESCRIPT/MACOS-MODULE:
+- Nutze subprocess.run(['osascript', '-e', script], capture_output=True, text=True)
+- Prüfe immer result.returncode == 0
+- Zeige stderr bei Fehler an
+
+FÜR WEB-MODULE:
+- Nutze requests oder httpx
+- Nutze BeautifulSoup für HTML-Parsing
+- Timeout immer setzen (timeout=10)
+
+FÜR SYSTEM-MODULE:
+- Nutze subprocess, os, pathlib
+- Prüfe Pfade und Berechtigungen
+
+FÜR STATUS/BALANCE-MODULE (APIs mit Guthaben, Kontostand, Verbrauch):
+- Berechne Verbrauch immer selbst: verbrauch = (aufgeladen + bonus) - gesamt
+- Wenn kein tages-spezifischer Verbrauch verfügbar: nutze diese Näherung
+- NIEMALS schreiben "API gibt Verbrauch nicht aus" — immer berechnen!
+- Verwende dieses visuelle Design für Status-Ausgaben:
+```
+💎 [Titel]
+￣￣￣￣￣￣￣￣￣￣￣￣￣
+💰 Wert1: ...
+📥 Wert2: ...
+🎁 Wert3: ...
+￣￣￣￣￣￣￣￣￣￣￣￣￣
+📊 Verbrauch: ...
+￣￣￣￣￣￣￣￣￣￣￣￣￣
+📅 Stand: HH:MM:SS
+```
+- Trennlinie immer: "￣￣￣￣￣￣￣￣￣￣￣￣￣"
+- Jeder Block (Guthaben / Verbrauch / Timestamp) durch Trennlinie abgeteilt
+
+NOCHMAL: Nur reiner Python-Code. Kein Markdown. Keine Backticks. Keine Kommentare außerhalb des Codes."""
+
+# ─────────────────────────────────────────────
+# SYSTEM-PROMPT FÜR AGENT-MODE
+# Führt Recherchen aus, gibt RESULT: ... aus
+# ─────────────────────────────────────────────
+AGENT_SYSTEM = """Du bist RICS, ein autonomer KI-Agent.
+Deine Aufgabe: Schreibe Python-Code der Daten recherchiert und das Ergebnis ausgibt.
+
+REGELN (ABSOLUT PFLICHT):
+1. Antworte NUR mit reinem Python-Code — kein Markdown, keine Backticks.
+2. Nutze requests, BeautifulSoup, re oder duckduckgo_search für Recherche.
+3. Das Ergebnis MUSS mit print("RESULT:", ...) ausgegeben werden.
+4. Timeout immer setzen.
+5. Fehlerhandling mit try/except.
+6. KEIN Telegram-Code.
+7. KEIN import von Telegram-Modulen.
+
+BEISPIEL-STRUKTUR:
+```
+import requests
+from bs4 import BeautifulSoup
+
+try:
+    r = requests.get("https://...", timeout=10, headers={"User-Agent": "Mozilla/5.0"})
+    soup = BeautifulSoup(r.text, "html.parser")
+    data = soup.find("...").text.strip()
+    print("RESULT:", data)
+except Exception as e:
+    print("RESULT: Fehler:", e)
+```
+
+Nur reiner Python-Code. Keine Backticks. Keine Erklärungen."""
+
+
+# ─────────────────────────────────────────────
+# SYSTEM-PROMPT FÜR SCRIPT-MODE
+# Erzeugt standalone Python-Skripte ohne Telegram-Abhängigkeit
+# ─────────────────────────────────────────────
+SCRIPT_SYSTEM = """Du bist RICS, ein autonomer KI-Agent auf macOS.
+Deine Aufgabe: Schreibe vollständige, sofort lauffähige Python-Skripte die lokal auf macOS ausgeführt werden.
+
+REGELN (ABSOLUT PFLICHT):
+1. Antworte NUR mit reinem Python-Code — kein Markdown, keine Backticks, keine Erklärungen.
+2. KEIN Telegram-Code, KEINE Telegram-Imports.
+3. Das Skript muss direkt mit 'python3 skript.py' ausführbar sein.
+4. JEDE Funktion braucht vollständiges Fehlerhandling mit try/except.
+5. Ergebnisse als lesbare deutsche Ausgabe mit print().
+6. Für macOS-Interaktion: subprocess.run(['osascript', '-e', script], ...) nutzen.
+7. Für Web-Zugriff: requests oder httpx mit timeout=15 nutzen.
+8. Am Ende: if __name__ == '__main__': main() Aufruf.
+
+PFLICHT-STRUKTUR:
+import os, sys, re, json, subprocess
+import requests  # falls Web-Zugriff nötig
+
+def main():
+    try:
+        # Hauptlogik
+        result = do_something()
+        print(result)
+    except Exception as e:
+        print(f"Fehler: {e}")
+        sys.exit(1)
+
+def do_something():
+    try:
+        # Implementierung
+        return "Ergebnis"
+    except Exception as e:
+        return f"❌ Fehler: {e}"
+
+if __name__ == '__main__':
+    main()
+
+Nur reiner Python-Code. Kein Markdown. Keine Backticks. Keine Kommentare außerhalb des Codes."""
+
+
+def task_id_safe(task: str) -> str:
+    clean      = re.sub(r"[^a-z0-9_]", "_", task.lower())[:32]
+    short_hash = hashlib.sha1(task.encode()).hexdigest()[:8]
+    return f"{clean}_{short_hash}"
+
+
+def extract_code(text: str) -> str:
+    """Extrahiert reinen Python-Code aus LLM-Antworten (entfernt Markdown-Fences falls vorhanden)."""
+    # Markdown-Fences entfernen falls das Modell sie trotzdem schreibt
+    text = re.sub(r"```python\s*", "", text)
+    text = re.sub(r"```\s*", "", text)
+    # Thinking-Tags entfernen (DeepSeek-Reasoner)
+    text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
+    return text.strip()
+
+
+def get_module_catalog() -> str:
+    """
+    Scannt das Projektverzeichnis (nicht modules/) nach .py-Dateien
+    und extrahiert öffentliche async/sync Funktionen pro Modul.
+    Gibt einen formatierten Katalog-String für den Builder-Prompt zurück.
+    """
+    skip = {"__init__", "setup", "bot", "orchestrator", "llm_client",
+            "event_bus", "session_manager", "web_app", "brain",
+            "proactive_brain", "self_reflection", "funktions_scan", "updater"}
+
+    entries = []
+    try:
+        for fname in sorted(os.listdir(PROJECT_DIR)):
+            if not fname.endswith(".py"):
+                continue
+            stem = fname[:-3]
+            if stem in skip:
+                continue
+            fpath = os.path.join(PROJECT_DIR, fname)
+            try:
+                with open(fpath, encoding="utf-8", errors="ignore") as f:
+                    src = f.read()
+                # Top-level async def und def extrahieren
+                fns = re.findall(r"^(?:async )?def (\w+)\s*\(", src, re.MULTILINE)
+                # Interne Helper weglassen (Unterstriche)
+                fns = [fn for fn in fns if not fn.startswith("_") and fn not in ("setup", "main")]
+                if fns:
+                    fn_list = ", ".join(fns[:8])  # Max 8 Funktionen zeigen
+                    entries.append(f"  {fname:<25} → {fn_list}")
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    if not entries:
+        return ""
+
+    catalog = (
+        "VERFÜGBARE PROJEKTMODULE (importierbar im generierten Modul):\n"
+        + "\n".join(entries)
+        + "\n\n"
+        "IMPORT-PATTERN (Pfad zum Projektverzeichnis):\n"
+        "  import sys, os as _os\n"
+        "  sys.path.insert(0, _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))))\n"
+        "  from Wetter import get_forecast   # Beispiel — passe Modul+Funktion an\n"
+        "\n"
+        "Nutze dieses Pattern wenn das neue Modul Funktionen aus bestehenden Modulen braucht.\n"
+        "Importiere NUR was wirklich benötigt wird."
+    )
+    return catalog
+
+
+class Orchestrator:
+    def __init__(self, jarvis, update, context):
+        self.jarvis  = jarvis
+        self.update  = update
+        self.context = context
+        self.total_code = ""
+        self.results    = []
+
+    # ─────────────────────────────────────────
+    # MODUS-ERKENNUNG (LLM-basiert)
+    # agent   = nur Daten recherchieren / ausgeben
+    # builder = Telegram-Modul erstellen
+    # hybrid  = erst recherchieren, dann Modul bauen
+    # ─────────────────────────────────────────
+    async def detect_mode(self, task: str) -> str:
+        prompt = (
+            f"Analysiere diese Aufgabe und antworte NUR mit einem dieser vier Wörter:\n\n"
+            f"AGENT    → Nur Daten recherchieren/ausgeben, kein Modul nötig\n"
+            f"BUILDER  → Telegram-Bot-Modul erstellen (kein Recherche nötig)\n"
+            f"HYBRID   → Erst Daten recherchieren, dann daraus ein Modul bauen\n"
+            f"SCRIPT   → Lokales Python-Skript ohne Telegram, das einmalig oder manuell ausgeführt wird\n\n"
+            f"Aufgabe: {task}\n\n"
+            f"Beispiele:\n"
+            f"'Finde aktuellen Benzinpreis' → AGENT\n"
+            f"'Erstelle Kalender-Modul für macOS' → BUILDER\n"
+            f"'Baue ein Modul das DB Fahrplandaten abruft' → HYBRID\n"
+            f"'Wetter-Modul mit OpenWeather API' → HYBRID\n"
+            f"'Schreibe ein Skript das die Fernsehzeitung herunterlädt' → SCRIPT\n"
+            f"'Erstelle ein lokales Skript das Ordner aufräumt' → SCRIPT\n\n"
+            f"Antworte NUR mit: AGENT, BUILDER, HYBRID oder SCRIPT"
+        )
+        try:
+            result = await self.llm_call([{"role": "user", "content": prompt}])
+            result = result.strip().upper()
+            if "HYBRID"  in result: return "hybrid"
+            if "SCRIPT"  in result: return "script"
+            if "BUILDER" in result: return "builder"
+            return "agent"
+        except:
+            # Fallback: keyword-basiert
+            keywords_script  = ["skript", "script", "lokal", "lokales", "standalone", "ohne telegram", "datei erstellen", "herunterladen", "download"]
+            keywords_builder = ["modul", "kalender", "applescript", "macos", "tool", "erinnerung", "termin", "handler", "befehl"]
+            keywords_hybrid  = ["api", "fahrplan", "wetter", "online", "abrufen und", "suchen und", "baue ein modul"]
+            task_lower = task.lower()
+            if any(k in task_lower for k in keywords_script):  return "script"
+            if any(k in task_lower for k in keywords_hybrid):  return "hybrid"
+            if any(k in task_lower for k in keywords_builder): return "builder"
+            return "agent"
+
+    # ─────────────────────────────────────────
+    # TELEGRAM LOG-HELPER
+    # ─────────────────────────────────────────
+    async def log(self, text: str):
+        safe = html.escape(str(text))
+        return await self.context.bot.send_message(
+            chat_id=self.update.effective_chat.id,
+            text=safe,
+            parse_mode="HTML"
+        )
+
+    # ─────────────────────────────────────────
+    # LLM-CALL — DeepSeek API, Ollama als Notfall
+    # ─────────────────────────────────────────
+    async def llm_call(self, messages: list, use_json: bool = False) -> str:
+        """
+        Ruft DeepSeek API auf.
+        Fällt auf Ollama zurück nur wenn API nicht verfügbar oder Rate Limit.
+        """
+        # ── 1. DeepSeek API ──
+        if DS_API_KEY:
+            try:
+                payload = {
+                    "model":       DS_MODEL,
+                    "messages":    messages,
+                    "stream":      False,
+                    "max_tokens":  4096,
+                    "temperature": 0.2,  # Niedrig für Code-Generierung
+                }
+                if use_json:
+                    payload["response_format"] = {"type": "json_object"}
+
+                async with httpx.AsyncClient(timeout=120) as client:
+                    response = await client.post(
+                        DS_URL,
+                        headers={
+                            "Authorization": f"Bearer {DS_API_KEY}",
+                            "Content-Type":  "application/json",
+                        },
+                        json=payload
+                    )
+
+                if response.status_code == 429:
+                    raise Exception("DeepSeek Rate Limit")
+                if response.status_code == 402:
+                    raise Exception("DeepSeek Guthaben leer")
+                if response.status_code != 200:
+                    raise Exception(f"DeepSeek HTTP {response.status_code}")
+
+                content = response.json()["choices"][0]["message"]["content"].strip()
+                if use_json:
+                    content = re.sub(r"```json|```", "", content).strip()
+                    match   = re.search(r'\{.*\}', content, re.DOTALL)
+                    return json.loads(match.group() if match else content)
+                return content
+
+            except Exception as e:
+                await self.log(f"⚠️ DeepSeek Fehler: {e} → Ollama Notfall-Fallback")
+
+        # ── 2. Ollama Notfall-Fallback ──
+        try:
+            import ollama
+            ollama_model = os.getenv("OLLAMA_MODEL", "qwen3:8b")
+            loop = asyncio.get_event_loop()
+            kwargs = {"model": ollama_model, "messages": messages}
+            if use_json:
+                kwargs["format"] = "json"
+            res     = await loop.run_in_executor(None, lambda: ollama.chat(**kwargs))
+            content = res["message"]["content"].strip()
+            content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
+            if use_json:
+                match = re.search(r'\{.*\}', content, re.DOTALL)
+                return json.loads(match.group() if match else content)
+            return content
+        except Exception as e:
+            raise Exception(f"Alle LLM-Provider fehlgeschlagen: {e}")
+
+    # ─────────────────────────────────────────
+    # BRAIN-KONTEXT
+    # ─────────────────────────────────────────
+    async def get_brain_context(self, task: str, mode: str) -> str:
+        if mode == "builder":
+            return "Builder-Modus: Kein Brain-Kontext nötig."
+        context_parts = []
+        brain = self.context.application.bot_data.get("brain")
+        if brain:
+            try:
+                historical = brain.get_historical(task)
+                if historical and historical != "KEINE DATEN":
+                    context_parts.append(f"Brain-Historie: {historical}")
+            except:
+                pass
+        if self.jarvis and self.jarvis.memory:
+            try:
+                past = self.jarvis.memory.search_user(f"MISSION: {task}")
+                if past:
+                    context_parts.append(f"Frühere Missionen:\n{past}")
+            except:
+                pass
+        return "\n\n".join(context_parts) if context_parts else "Keine Vorgeschichte."
+
+    # ─────────────────────────────────────────
+    # CODE AUSFÜHREN (nur Agent-Mode)
+    # ─────────────────────────────────────────
+    async def run_agent_code(self, code: str) -> tuple[str, str]:
+        """Führt Recherche-Code in Subprocess aus. Gibt (stdout, stderr) zurück."""
+        try:
+            result = await asyncio.get_event_loop().run_in_executor(
+                None,
+                lambda: subprocess.run(
+                    [sys.executable, "-c", code],
+                    capture_output=True,
+                    text=True,
+                    timeout=30
+                )
+            )
+            return result.stdout.strip(), result.stderr.strip()
+        except subprocess.TimeoutExpired:
+            return "", "Timeout: Code lief länger als 30 Sekunden"
+        except Exception as e:
+            return "", str(e)
+
+    # ─────────────────────────────────────────
+    # MODUL-CODE VALIDIEREN (Builder-Mode)
+    # ─────────────────────────────────────────
+    def validate_module_code(self, code: str) -> tuple[bool, str]:
+        """Prüft ob generierter Code eine valide Modul-Struktur hat."""
+        checks = {
+            "setup(app)":         "Keine setup(app)-Funktion gefunden",
+            "CommandHandler":     "Kein CommandHandler gefunden",
+            "async def":          "Keine async Handler-Funktion gefunden",
+            ".description":       "Keine Metadaten (.description) gefunden",
+        }
+        for keyword, error in checks.items():
+            if keyword not in code:
+                return False, error
+        return True, "OK"
+
+    # ─────────────────────────────────────────
+    # HAUPTMETHODE
+    # ─────────────────────────────────────────
+    async def execute_mission(self, task: str):
+        self.context.application.bot_data["mission_running"] = True
+        original_task = task
+        mode = await self.detect_mode(task)
+
+        mode_labels = {"builder": "🔨 BUILDER", "agent": "🔍 AGENT", "hybrid": "🔀 HYBRID", "script": "📝 SCRIPT"}
+        await self.log(
+            f"🚀 <b>MISSION START</b>\n"
+            f"📋 Task: {task}\n"
+            f"⚡ Modus: <b>{mode_labels.get(mode, mode.upper())}</b>\n"
+            f"🧠 LLM: DeepSeek API {'(Ollama Fallback bereit)' if not DS_API_KEY else ''}"
+        )
+
+        brain_context = await self.get_brain_context(task, mode)
+
+        # ─── HYBRID MODE: Erst recherchieren, dann Modul bauen ───
+        if mode == "hybrid":
+            await self.log("🔀 <b>Hybrid Schritt 1/2</b> — API recherchieren...")
+            research_messages = [
+                {"role": "system", "content": AGENT_SYSTEM},
+                {"role": "user",   "content": (
+                    f"Recherchiere für folgende Aufgabe:\n{task}\n\n"
+                    f"Finde heraus:\n"
+                    f"- Welche öffentliche API/URL kann genutzt werden?\n"
+                    f"- Wie sieht ein konkreter API-Call aus?\n"
+                    f"- Welche Parameter/Keys sind nötig?\n"
+                    f"Schreibe Python-Code der die API testet und mit print('RESULT:', ...) ausgibt.\n"
+                    f"Nur reiner Python-Code, keine Backticks."
+                )}
+            ]
+            try:
+                raw_research   = await self.llm_call(research_messages)
+                research_code  = extract_code(raw_research)
+                stdout, stderr = await self.run_agent_code(research_code)
+                research_result = stdout if stdout else f"Kein Output. Stderr: {stderr[:300]}"
+                await self.log(f"🔍 API-Recherche:\n{html.escape(research_result[:600])}")
+            except Exception as e:
+                research_result = f"Recherche fehlgeschlagen: {e}"
+                await self.log(f"⚠️ {research_result}")
+
+            # Recherche-Ergebnis in Builder-Task einbauen
+            await self.log("🔀 <b>Hybrid Schritt 2/2</b> — Modul generieren...")
+            task = (
+                f"{original_task}\n\n"
+                f"RECHERCHE-ERGEBNIS (nutze diese API-Infos direkt im Modul):\n"
+                f"{research_result}"
+            )
+            mode = "builder"
+
+        # ─── BUILDER MODE: Telegram-Modul generieren ───
+        if mode == "builder":
+            await self.log("🔨 Generiere vollständiges Telegram-Modul...")
+
+            module_catalog = get_module_catalog()
+            messages = [
+                {"role": "system", "content": BUILDER_SYSTEM},
+                {"role": "user",   "content": (
+                    f"Erstelle ein vollständiges Telegram-Bot-Modul für folgende Aufgabe:\n\n"
+                    f"{task}\n\n"
+                    f"WICHTIG:\n"
+                    f"- Reiner Python-Code, KEINE Backticks, KEIN Markdown\n"
+                    f"- Vollständig implementiert, nicht nur Stubs\n"
+                    f"- Alle Funktionen komplett ausimplementiert\n"
+                    f"- setup(app) mit allen CommandHandlern am Ende\n"
+                    f"- Deutsche Ausgaben\n\n"
+                    + (f"{module_catalog}\n" if module_catalog else "")
+                )}
+            ]
+
+            max_attempts = 2
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    raw = await self.llm_call(messages)
+                    code = extract_code(raw)
+
+                    # Validierung
+                    valid, reason = self.validate_module_code(code)
+                    if not valid and attempt < max_attempts:
+                        await self.log(f"⚠️ Versuch {attempt}: {reason} — Nachbessern...")
+                        messages.append({"role": "assistant", "content": raw})
+                        messages.append({"role": "user", "content": (
+                            f"Fehler: {reason}\n"
+                            f"Bitte korrigiere den Code. Stelle sicher dass enthalten ist:\n"
+                            f"- setup(app) Funktion\n"
+                            f"- CommandHandler\n"
+                            f"- async def Handler-Funktion\n"
+                            f"- .description Metadaten\n"
+                            f"Nur reiner Python-Code, keine Backticks."
+                        )})
+                        continue
+
+                    # Code speichern
+                    self.total_code = code
+                    task_id = task_id_safe(task)
+                    workspace_path = os.path.join(WORKSPACE, f"auto_{task_id}.py")
+                    with open(workspace_path, "w", encoding="utf-8") as f:
+                        f.write(code)
+
+                    self.context.bot_data[f"code_{task_id}"]    = code
+                    self.context.bot_data[f"results_{task_id}"] = [f"Modul generiert: {workspace_path}"]
+
+                    # Vorschau
+                    preview_lines = code.split("\n")[:20]
+                    preview = "\n".join(preview_lines)
+                    await self.log(
+                        f"✅ <b>MODUL GENERIERT</b> ({len(code.split(chr(10)))} Zeilen)\n\n"
+                        f"<pre>{html.escape(preview)}...</pre>"
+                    )
+
+                    self.context.application.bot_data["mission_running"] = False
+
+                    keyboard = [[
+                        InlineKeyboardButton("✅ Modul installieren", callback_data=f"evolve_{task_id}"),
+                        InlineKeyboardButton("👀 Code anzeigen",      callback_data=f"showcode_{task_id}")
+                    ]]
+                    await self.context.bot.send_message(
+                        chat_id=self.update.effective_chat.id,
+                        text=(
+                            f"🏁 <b>MISSION ERFOLGREICH</b>\n"
+                            f"📦 Modul bereit zur Installation.\n"
+                            f"Klicke <b>Modul installieren</b> um es zu aktivieren."
+                        ),
+                        reply_markup=InlineKeyboardMarkup(keyboard),
+                        parse_mode="HTML"
+                    )
+                    return
+
+                except Exception as e:
+                    await self.log(f"❌ Versuch {attempt} fehlgeschlagen: {e}")
+
+            await self.log("❌ Modul-Generierung fehlgeschlagen nach allen Versuchen.")
+
+        # ─── SCRIPT MODE: Lokales Python-Skript generieren ───
+        if mode == "script":
+            await self.log("📝 Generiere lokales Python-Skript...")
+
+            messages = [
+                {"role": "system", "content": SCRIPT_SYSTEM},
+                {"role": "user",   "content": (
+                    f"Erstelle ein vollständiges lokales Python-Skript für folgende Aufgabe:\n\n"
+                    f"{task}\n\n"
+                    f"WICHTIG:\n"
+                    f"- Reiner Python-Code, KEINE Backticks, KEIN Markdown\n"
+                    f"- KEIN Telegram-Code\n"
+                    f"- Vollständig implementiert, sofort ausführbar\n"
+                    f"- Deutsche Ausgaben\n"
+                    f"- if __name__ == '__main__': main() am Ende"
+                )}
+            ]
+
+            max_attempts = 2
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    raw  = await self.llm_call(messages)
+                    code = extract_code(raw)
+
+                    # Skript speichern
+                    task_id       = task_id_safe(task)
+                    script_name   = f"script_{task_id}.py"
+                    script_path   = os.path.join(WORKSPACE, script_name)
+                    with open(script_path, "w", encoding="utf-8") as f:
+                        f.write(code)
+
+                    self.context.bot_data[f"code_{task_id}"] = code
+
+                    preview_lines = code.split("\n")[:20]
+                    preview       = "\n".join(preview_lines)
+                    await self.log(
+                        f"✅ <b>SKRIPT GENERIERT</b> ({len(code.split(chr(10)))} Zeilen)\n\n"
+                        f"<pre>{html.escape(preview)}...</pre>"
+                    )
+
+                    self.context.application.bot_data["mission_running"] = False
+
+                    keyboard = [[
+                        InlineKeyboardButton("▶️ Skript ausführen", callback_data=f"runscript_{task_id}"),
+                        InlineKeyboardButton("👀 Code anzeigen",    callback_data=f"showcode_{task_id}")
+                    ]]
+                    await self.context.bot.send_message(
+                        chat_id=self.update.effective_chat.id,
+                        text=(
+                            f"🏁 <b>SKRIPT BEREIT</b>\n"
+                            f"📁 <code>{html.escape(script_path)}</code>\n\n"
+                            f"Klicke <b>Skript ausführen</b> um es zu starten, Sir."
+                        ),
+                        reply_markup=InlineKeyboardMarkup(keyboard),
+                        parse_mode="HTML"
+                    )
+                    return
+
+                except Exception as e:
+                    await self.log(f"❌ Versuch {attempt} fehlgeschlagen: {e}")
+                    if attempt < max_attempts:
+                        messages.append({"role": "assistant", "content": raw if 'raw' in locals() else ""})
+                        messages.append({"role": "user", "content": f"Fehler: {e}\nBitte korrigiere. Nur reiner Python-Code."})
+
+            self.context.application.bot_data["mission_running"] = False
+            await self.log("❌ Skript-Generierung fehlgeschlagen nach allen Versuchen.")
+            return
+
+        # ─── AGENT MODE: Recherche-Code ausführen ───
+        else:
+            await self.log("🔍 Starte Recherche...")
+
+            messages = [
+                {"role": "system", "content": AGENT_SYSTEM},
+                {"role": "user",   "content": (
+                    f"Recherche-Aufgabe: {task}\n"
+                    f"Kontext: {brain_context}\n\n"
+                    f"Schreibe Python-Code der die Aufgabe löst und das Ergebnis mit print('RESULT:', ...) ausgibt.\n"
+                    f"Nur reiner Python-Code, keine Backticks."
+                )}
+            ]
+
+            max_attempts = 3
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    raw  = await self.llm_call(messages)
+                    code = extract_code(raw)
+
+                    await self.log(f"⚡ Ausführen (Versuch {attempt})...")
+                    stdout, stderr = await self.run_agent_code(code)
+
+                    if stdout and "RESULT:" in stdout:
+                        result_text = stdout.split("RESULT:", 1)[1].strip()
+                        self.results.append(result_text)
+
+                        task_id = task_id_safe(task)
+                        self.context.bot_data[f"results_{task_id}"] = self.results
+
+                        self.context.application.bot_data["mission_running"] = False
+                        await self.log(f"✅ <b>ERGEBNIS:</b>\n{html.escape(result_text[:2000])}")
+                        return
+
+                    elif stderr:
+                        await self.log(f"⚠️ Fehler (Versuch {attempt}): {stderr[:300]}")
+                        if attempt < max_attempts:
+                            messages.append({"role": "assistant", "content": raw})
+                            messages.append({"role": "user", "content": (
+                                f"Fehler beim Ausführen:\n{stderr}\n\n"
+                                f"Korrigiere den Code. Nur reiner Python-Code."
+                            )})
+                    else:
+                        await self.log(f"⚠️ Kein RESULT in Output (Versuch {attempt})")
+
+                except Exception as e:
+                    await self.log(f"❌ Versuch {attempt}: {e}")
+
+            self.context.application.bot_data["mission_running"] = False
+            await self.log("❌ Recherche nach allen Versuchen ohne Ergebnis.")
+
+
+# ─────────────────────────────────────────────
+# CALLBACKS
+# ─────────────────────────────────────────────
+async def runscript_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Führt ein gespeichertes lokales Skript aus und schickt den Output."""
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text("▶️ Skript wird ausgeführt...")
+
+    task_id     = query.data.replace("runscript_", "")
+    script_path = os.path.join(WORKSPACE, f"script_{task_id}.py")
+
+    if not os.path.exists(script_path):
+        return await query.edit_message_text("❌ Skript nicht gefunden.")
+
+    try:
+        result = subprocess.run(
+            [sys.executable, script_path],
+            capture_output=True, text=True, timeout=60
+        )
+        output = result.stdout.strip() or result.stderr.strip() or "Kein Output."
+        output = output[:3500]
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=f"📋 <b>Skript-Output:</b>\n<pre>{html.escape(output)}</pre>",
+            parse_mode="HTML"
+        )
+    except subprocess.TimeoutExpired:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text="⏱️ Skript Timeout (>60s)"
+        )
+    except Exception as e:
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=f"❌ Fehler beim Ausführen: {html.escape(str(e))}"
+        )
+
+
+async def evolve_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text("⚙️ Modul wird installiert...")
+
+    task_id = query.data.replace("evolve_", "")
+    code    = context.bot_data.get(f"code_{task_id}")
+    if not code:
+        return await query.edit_message_text("❌ Kein Code gefunden.")
+
+    # Dateiname aus CommandHandler("befehl", ...) im Code ableiten
+    cmd_match = re.search(r'CommandHandler\(["\'](\w+)["\']', code)
+    if cmd_match:
+        module_filename = f"{cmd_match.group(1)}.py"
+    else:
+        module_filename = f"auto_{task_id}.py"
+
+    workspace_path = os.path.join(WORKSPACE, f"auto_{task_id}.py")
+    module_path    = os.path.join(MODULES_DIR, module_filename)
+
+    try:
+        # Falls nicht mehr im Workspace, direkt schreiben
+        if not os.path.exists(workspace_path):
+            with open(module_path, "w", encoding="utf-8") as f:
+                f.write(code)
+        else:
+            os.rename(workspace_path, module_path)
+    except Exception as e:
+        return await query.edit_message_text(f"❌ Fehler: {e}")
+
+    keyboard = [[InlineKeyboardButton("🔄 Bot neu starten", callback_data="system_restart")]]
+    await query.edit_message_text(
+        text=(
+            f"✅ <b>MODUL INSTALLIERT</b>\n"
+            f"📁 {html.escape(os.path.basename(module_path))}\n\n"
+            f"Neustart erforderlich um das Modul zu aktivieren, Sir."
+        ),
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="HTML"
+    )
+
+
+async def showcode_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Zeigt generierten Code zur Vorschau."""
+    query = update.callback_query
+    await query.answer()
+    task_id = query.data.replace("showcode_", "")
+    code    = context.bot_data.get(f"code_{task_id}", "Kein Code gefunden.")
+    # In Chunks senden falls zu lang
+    chunks = [code[i:i+3500] for i in range(0, len(code), 3500)]
+    for i, chunk in enumerate(chunks[:3]):  # Max 3 Nachrichten
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=f"<pre>{html.escape(chunk)}</pre>",
+            parse_mode="HTML"
+        )
+
+
+async def system_restart_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text("🚀 <b>REBOOT...</b> Gleich zurück, Sir.", parse_mode="HTML")
+    os._exit(42)
+
+
+async def mission_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    jarvis = context.application.bot_data.get("jarvis")
+    if not context.args:
+        return await update.message.reply_text(
+            "Sir, was ist die Mission?\n\n"
+            "Beispiele:\n"
+            "`/mission Finde aktuellen Benzinpreis`\n"
+            "`/mission Erstelle ein Modul für den macOS Kalender`",
+            parse_mode="Markdown"
+        )
+    orch = Orchestrator(jarvis, update, context)
+    await orch.execute_mission(" ".join(context.args))
+
+
+# ─────────────────────────────────────────────
+# METADATEN & SETUP
+# ─────────────────────────────────────────────
+mission_handler.description = "Autonome Mission: Recherche oder Modul-Erstellung via DeepSeek API"
+mission_handler.category    = "KI"
+
+
+def setup(app):
+    app.add_handler(CommandHandler("mission",         mission_handler))
+    app.add_handler(CallbackQueryHandler(evolve_callback,          pattern="^evolve_"))
+    app.add_handler(CallbackQueryHandler(showcode_callback,        pattern="^showcode_"))
+    app.add_handler(CallbackQueryHandler(runscript_callback,       pattern="^runscript_"))
+    app.add_handler(CallbackQueryHandler(system_restart_callback,  pattern="^system_restart$"))

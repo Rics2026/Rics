@@ -635,8 +635,13 @@ async def _manual_heartbeat() -> dict:
 
     count = _tick_counter()
     post_runde = (count == 0)
+
     if not post_runde:
-        return {"action": "none", "details": f"Beat {count}/4 — Post in {4 - count} Beat(s)"}
+        # Non-Post-Beat: andere Bots checken und reagieren
+        future = asyncio.run_coroutine_threadsafe(_react_to_others(guild), loop)
+        tg_loop = asyncio.get_running_loop()
+        await tg_loop.run_in_executor(None, lambda: future.result(timeout=60))
+        return {"action": "none", "details": f"Beat {count}/4 — reagiert auf andere | Post in {4 - count} Beat(s)"}
 
     future = asyncio.run_coroutine_threadsafe(_do_heartbeat(guild), loop)
     tg_loop = asyncio.get_running_loop()

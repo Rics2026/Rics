@@ -416,7 +416,15 @@ class RicsDiscordBot:
         self.loop   = None
         self.thread = None
         self.ready  = False
+        self._message_listeners    = []
+        self._member_join_listeners = []
         self._init_bot()
+
+    def add_message_listener(self, coro):
+        self._message_listeners.append(coro)
+
+    def add_member_join_listener(self, coro):
+        self._member_join_listeners.append(coro)
 
     def _init_bot(self):
         if not DISCORD_AVAILABLE or not DISCORD_TOKEN:
@@ -463,6 +471,13 @@ class RicsDiscordBot:
                 if clean:
                     await self._handle_chat(message, clean)
 
+            # Externe Listener (z.B. discord_ki_server)
+            for listener in self._message_listeners:
+                try:
+                    await listener(message)
+                except Exception as e:
+                    log.debug(f"message_listener Fehler: {e}")
+
         @self.bot.event
         async def on_member_join(member: discord.Member):
             guild   = member.guild
@@ -475,6 +490,13 @@ class RicsDiscordBot:
                 )
                 embed.set_footer(text=f"Member #{guild.member_count}")
                 await channel.send(embed=embed)
+
+            # Externe Listener (z.B. discord_ki_server)
+            for listener in self._member_join_listeners:
+                try:
+                    await listener(member)
+                except Exception as e:
+                    log.debug(f"member_join_listener Fehler: {e}")
 
     async def _handle_chat(self, message: discord.Message, content: str):
         allowed, reason = _rate_limiter.check(message.author.id)

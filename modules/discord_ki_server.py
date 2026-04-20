@@ -582,8 +582,8 @@ def _register_listeners(discord_manager_module):
             return
 
         # Listener registrieren
-        bot.add_listener(_ki_on_message,     "on_message")
-        bot.add_listener(_ki_on_member_join, "on_member_join")
+        bot_wrapper.add_message_listener(_ki_on_message)
+        bot_wrapper.add_member_join_listener(_ki_on_member_join)
 
         # on_ready nachholen falls Bot bereits ready
         if bot_wrapper.ready:

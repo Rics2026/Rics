@@ -1,5 +1,5 @@
 Version 2.2
 
-modules/discrod_ki_server.py
+modules/discord_ki_server.py
 modules/web_app.py
 modules/proactive_brain.py

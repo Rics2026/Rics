@@ -11,6 +11,21 @@ from dotenv import load_dotenv, set_key
 
 logger = logging.getLogger(__name__)
 
+# ── Werkzeug Log-Filter: Scanner-Spam unterdrücken ────────────────────────
+class _BotPathFilter(logging.Filter):
+    _NOISE = (
+        "php", "cgi-bin", "eval-stdin", "phpunit", "vendor/",
+        "wp-", ".env", "setup.php", "install", "invokefunction",
+        "containers/json", "pearcmd", "allow_url_include",
+    )
+    def filter(self, record: logging.LogRecord) -> bool:
+        msg = record.getMessage()
+        if any(p in msg for p in self._NOISE):
+            return False
+        return True
+
+logging.getLogger("werkzeug").addFilter(_BotPathFilter())
+
 BASE_DIR   = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MEMORY_DIR = os.path.join(BASE_DIR, "memory")
 ENV_PATH   = os.path.join(BASE_DIR, ".env")

@@ -1,11 +1,9 @@
-Update 2.0
+Update 2.1
 
-- discord_ki_server.py veröffentlichung Testphase 1
-- Moltbook.py Log fehler behoben
+- discord_ki_server.py Fix das mehrfach auf post geantwortet wird.
+                       Erstellen von Kategorien und ordnen von Kanälen
+                       /discord_ki_heartbeat wie Cron alle 4 Beats 1 Post.
 - web_app.py Bugfix
-- orchestrator.py Bugfix
-- solar.py intergrationt Growatt Noah 2000
-- web_app.py Settings Energie Fenster eingefügt
 
 
 

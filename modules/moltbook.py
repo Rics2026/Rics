@@ -44,33 +44,38 @@ def _get_headers() -> dict:
     key = os.getenv("MOLTBOOK_API_KEY", "")
     return {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
 
-_THIS_DIR   = os.path.dirname(os.path.abspath(__file__))
-PROJECT_DIR = _THIS_DIR if not _THIS_DIR.endswith("modules") else os.path.dirname(_THIS_DIR)
-LOG_DIR     = os.path.join(PROJECT_DIR, "logs")
-STATE_FILE  = os.path.join(LOG_DIR, "moltbook_state.json")
+_THIS_DIR    = os.path.dirname(os.path.abspath(__file__))
+PROJECT_DIR  = _THIS_DIR if not _THIS_DIR.endswith("modules") else os.path.dirname(_THIS_DIR)
+LOG_DIR      = os.path.join(PROJECT_DIR, "logs")
+MOLT_LOG_DIR = os.path.join(LOG_DIR, "moltbook")
+STATE_FILE   = os.path.join(LOG_DIR, "moltbook_state.json")
+LOG_FILE     = os.path.join(MOLT_LOG_DIR, "moltbook.log")
 
-os.makedirs(LOG_DIR, exist_ok=True)
+os.makedirs(MOLT_LOG_DIR, exist_ok=True)
 
 HOURLY_LIMIT = 25
 
 
-# ── Log: täglich neu, alte sofort löschen ─────────────────────────────────────
+# ── Log: rollendes Einzel-Log in logs/moltbook/ ───────────────────────────────
 def _get_log_file() -> str:
-    today     = datetime.now().strftime("%Y-%m-%d")
-    today_log = os.path.join(LOG_DIR, f"moltbook_{today}.log")
-    for fname in os.listdir(LOG_DIR):
-        if fname.startswith("moltbook_") and fname.endswith(".log") and fname != f"moltbook_{today}.log":
-            try:
-                os.remove(os.path.join(LOG_DIR, fname))
-                log.info(f"Altes Moltbook-Log gelöscht: {fname}")
-            except Exception as e:
-                log.warning(f"Log-Löschung fehlgeschlagen ({fname}): {e}")
-    return today_log
+    return LOG_FILE
+
+LOG_MAX_LINES = 5000
 
 def _write_log(entry: dict):
     entry["ts"] = datetime.now().strftime("%d.%m.%Y %H:%M")
-    with open(_get_log_file(), "a", encoding="utf-8") as f:
+    log_file = _get_log_file()
+    with open(log_file, "a", encoding="utf-8") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    # Auf max. 5000 Zeilen kürzen (älteste fallen raus)
+    try:
+        with open(log_file, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+        if len(lines) > LOG_MAX_LINES:
+            with open(log_file, "w", encoding="utf-8") as f:
+                f.writelines(lines[-LOG_MAX_LINES:])
+    except Exception as e:
+        log.warning(f"Log-Trim fehlgeschlagen: {e}")
 
 def _read_log(n: int = 30) -> list:
     log_file = _get_log_file()

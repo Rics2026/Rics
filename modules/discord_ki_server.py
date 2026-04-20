@@ -533,7 +533,7 @@ async def _ki_on_message(message):
         return
     if message.author.bot is False:
         return
-    if not is_active() or random.random() > 0.70:
+    if not is_active() or random.random() > 0.25:
         return
     await asyncio.sleep(random.uniform(3, 10))
     loop = asyncio.get_running_loop()
@@ -632,8 +632,13 @@ async def _manual_heartbeat() -> dict:
     guild = discord.utils.get(bot.guilds, id=ALLOWED_GUILD_ID)
     if not guild:
         return {"action": "none", "details": f"Server {ALLOWED_GUILD_ID} nicht verbunden"}
-    future = asyncio.run_coroutine_threadsafe(
-        _do_heartbeat(guild), loop)
+
+    count = _tick_counter()
+    post_runde = (count == 0)
+    if not post_runde:
+        return {"action": "none", "details": f"Beat {count}/4 — Post in {4 - count} Beat(s)"}
+
+    future = asyncio.run_coroutine_threadsafe(_do_heartbeat(guild), loop)
     tg_loop = asyncio.get_running_loop()
     return await tg_loop.run_in_executor(None, lambda: future.result(timeout=120))
 

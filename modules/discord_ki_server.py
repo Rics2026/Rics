@@ -106,7 +106,7 @@ _PERSONAL_VALUES: set = _load_personal_values()
 def _is_private(text: str) -> bool:
     text_lower = text.lower()
     for val in _PERSONAL_VALUES:
-        if len(val) >= 4 and val.lower() in text_lower:
+        if len(val) >= 6 and val.lower() in text_lower:
             return True
     return False
 
@@ -311,7 +311,12 @@ def _llm_generate(prompt: str, max_tokens: int = 350) -> str:
                                    {"role": "user",   "content": prompt}],
                       "max_tokens": max_tokens, "temperature": 0.88},
                 timeout=30)
-            return r.json()["choices"][0]["message"]["content"].strip()
+            data = r.json()
+            if "choices" not in data:
+                err = data.get("error", {})
+                log.warning(f"Groq kein 'choices': {err.get('type','?')} — {err.get('message','?')[:120]}")
+            else:
+                return data["choices"][0]["message"]["content"].strip()
         except Exception as e:
             log.warning(f"Groq: {e}")
     if OLLAMA_AVAILABLE:
@@ -636,32 +641,6 @@ async def _manual_heartbeat() -> dict:
         _do_heartbeat(guild), loop)
     tg_loop = asyncio.get_running_loop()
     return await tg_loop.run_in_executor(None, lambda: future.result(timeout=120))
-
-
-async def send_to_ki_server(channel_name: str, message: str) -> dict:
-    """
-    Öffentliche Schnittstelle für bot.py → DISCORD_KI_MESSAGE Action.
-    Sendet in einen Kanal des festen KI-Servers. Erstellt Kanal falls nötig.
-    """
-    bot, loop = _get_shared_loop_and_bot()
-    if not bot or not loop:
-        return {"ok": False, "error": "discord_manager nicht verfügbar"}
-    guild = discord.utils.get(bot.guilds, id=ALLOWED_GUILD_ID)
-    if not guild:
-        return {"ok": False, "error": f"KI-Server {ALLOWED_GUILD_ID} nicht verbunden"}
-
-    async def _do_send():
-        ch = await _ensure_channel(guild, channel_name)
-        if not ch:
-            return {"ok": False, "error": f"Kanal #{channel_name} nicht erstellbar"}
-        await ch.send(message)
-        _write_log({"event": "ki_send", "kanal": f"#{channel_name}", "nachricht": message})
-        _memory_add(f"DISCORD_KI_SEND [{datetime.now().strftime('%d.%m.%Y %H:%M')}] #{channel_name}: {message}")
-        return {"ok": True, "kanal": channel_name}
-
-    future = asyncio.run_coroutine_threadsafe(_do_send(), loop)
-    tg_loop = asyncio.get_running_loop()
-    return await tg_loop.run_in_executor(None, lambda: future.result(timeout=30))
 
 
 # ══════════════════════════════════════════════════════════════════════════════

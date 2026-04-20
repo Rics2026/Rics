@@ -7,18 +7,6 @@ import sys
 # ═══════════════════════════════════════════════════════════════
 # WATCHDOG MODE — Selbst-Restart ohne FD-Vererbungsprobleme
 # ───────────────────────────────────────────────────────────────
-# Wenn bot.py normal gestartet wird (python bot.py), wird dieser
-# Prozess zum WATCHDOG. Er startet sich selbst als Child mit
-# RICS_CHILD=1. Der Child ist der echte Bot.
-#
-# Exit-Codes vom Child:
-#   42 → Restart (vom /update-Befehl ausgelöst)
-#    0 → Clean shutdown, Watchdog beendet sich auch
-#   * → Crash, Watchdog startet nach 5s neu
-#
-# Vorteil: Jeder Restart ist ein komplett frischer subprocess.
-# Kein FD-Vererbungsproblem → Flask-Port immer frei.
-# ═══════════════════════════════════════════════════════════════
 if os.getenv("RICS_CHILD") != "1":
     import subprocess as _sp
     import time as _t
@@ -27,7 +15,6 @@ if os.getenv("RICS_CHILD") != "1":
     _PROJECT = os.path.abspath(os.path.dirname(__file__))
     print("🛡️  RICS Watchdog aktiv (PID " + str(os.getpid()) + ")")
 
-    # SIGINT/SIGTERM an Child weiterleiten
     _child_proc = {"p": None}
 
     def _forward_signal(signum, frame):
@@ -109,7 +96,6 @@ MEMORY_DIR    = os.path.join(PROJECT_DIR, "memory")
 LOG_DIR       = os.path.join(PROJECT_DIR, "logs")
 PERSONAL_FILE = os.path.join(PROJECT_DIR,"memory", "personal.json")
 
-# ── Custom Actions Pfad (core/custom_actions.json) ──────────────
 CUSTOM_ACTIONS_FILE = os.path.join(PROJECT_DIR, "core", "custom_actions.json")
 
 for d in [WORKSPACE, MEMORY_DIR, LOG_DIR]:
@@ -126,23 +112,9 @@ import ollama
 
 
 # ════════════════════════════════════════════════════════════════
-# CUSTOM ACTIONS LOADER — hot-reload bei jedem Aufruf
+# CUSTOM ACTIONS LOADER
 # ════════════════════════════════════════════════════════════════
 def _load_custom_actions() -> list:
-    """
-    Lädt core/custom_actions.json frisch bei jedem Aufruf.
-    Kein Neustart nötig wenn du Actions hinzufügst!
-
-    Format in custom_actions.json:
-    [
-      {
-        "action":      "WETTER",          ← Name den RICS in ACTION: schreibt
-        "command":     "wetter",          ← Telegram-Command ohne /
-        "param":       "QUERY",           ← Feld das aus der Antwort extrahiert wird
-        "description": "Wetter abfragen"  ← nur zur Doku
-      }
-    ]
-    """
     if not os.path.exists(CUSTOM_ACTIONS_FILE):
         return []
     try:
@@ -154,22 +126,16 @@ def _load_custom_actions() -> list:
 
 
 # ════════════════════════════════════════════════════════════════
-# DISCORD KONTEXT — liest letzte RICS-Gespräche aus dem Log
+# DISCORD KONTEXT
 # ════════════════════════════════════════════════════════════════
 def _get_discord_context() -> str:
-    """
-    Liest die letzten Discord-Gespräche aus den täglichen Log-Dateien
-    (logs/discord/YYYY-MM-DD.json). Liest heute + gestern, max. 15 Einträge.
-    Wird in den System-Prompt eingebettet damit RICS weiß
-    mit wem er auf Discord gesprochen hat und worüber.
-    """
     from datetime import timedelta
     discord_logs_dir = os.path.join(LOG_DIR, "discord")
     if not os.path.isdir(discord_logs_dir):
         return ""
 
     logs = []
-    for days_ago in (1, 0):          # gestern zuerst, dann heute
+    for days_ago in (1, 0):
         date_str = (datetime.now(timezone.utc) - timedelta(days=days_ago)).strftime("%Y-%m-%d")
         path = os.path.join(discord_logs_dir, f"{date_str}.json")
         if os.path.exists(path):
@@ -200,18 +166,10 @@ def _get_discord_context() -> str:
 class PersonalMemory:
 
     DEFAULT = {
-        "basisinfo": {
-            "name": "",
-            "geboren": "",
-            "geburtsort": "",
-            "wohnort": ""
-        },
-        "partner": {
-            "name": "",
-            "heirat": ""
-        },
-        "kinder": [],
-        "fakten": []   # Liste von {id, key, value, created}
+        "basisinfo": {"name": "", "geboren": "", "geburtsort": "", "wohnort": ""},
+        "partner":   {"name": "", "heirat": ""},
+        "kinder":    [],
+        "fakten":    []
     }
 
     def __init__(self):
@@ -226,11 +184,9 @@ class PersonalMemory:
         try:
             with open(PERSONAL_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            # Legacy: sir → basisinfo
             if "sir" in data and "fakten" not in data:
                 data = self._migrate(data)
                 self._write(data)
-            # Fakten-Migration: dict → nummerierte Liste
             if isinstance(data.get("fakten"), dict):
                 data = self._migrate_fakten(data)
                 self._write(data)
@@ -268,7 +224,6 @@ class PersonalMemory:
         return new
 
     def _migrate_fakten(self, data: dict) -> dict:
-        """Migriert fakten von {key: value} dict zur nummerierten Liste."""
         old_fakten = data.get("fakten", {})
         now = datetime.now().isoformat()
         new_fakten = []
@@ -284,7 +239,6 @@ class PersonalMemory:
         return max(f.get("id", 0) for f in fakten) + 1
 
     def _get_known_values(self, data: dict) -> set:
-        """Alle Werte die schon in basisinfo / partner / kinder / fakten stecken."""
         known = set()
         for v in data.get("basisinfo", {}).values():
             if v: known.add(str(v).strip().lower())
@@ -297,7 +251,6 @@ class PersonalMemory:
             known.add(str(f.get("value", "")).strip().lower())
         return known
 
-    # Schlüssel die direkt in basisinfo gehören statt in fakten[]
     _BASISINFO_KEYS = {"name", "geboren", "geburtsort", "wohnort"}
 
     def set_fact(self, key: str, value: str):
@@ -307,21 +260,18 @@ class PersonalMemory:
         if v.lower() in self._get_known_values(data):
             print(f"🔁 set_fact: '{k}={v}' übersprungen (bereits bekannt)")
             return
-        # Basisinfo-Felder direkt in basisinfo schreiben
         if k in self._BASISINFO_KEYS:
             data.setdefault("basisinfo", {})[k] = v
             self._write(data)
             print(f"🧠 basisinfo.{k} = {v}")
             return
         fakten = data.setdefault("fakten", [])
-        # Key existiert bereits → updaten
         for f in fakten:
             if f.get("key") == k:
                 f["value"] = v
                 f["updated"] = datetime.now().isoformat()
                 self._write(data)
                 return
-        # Neu anlegen
         fakten.append({
             "id":      self._next_id(fakten),
             "key":     k,
@@ -343,7 +293,6 @@ class PersonalMemory:
             if val.lower() in known:
                 skipped.append(f"{key}={val}")
                 continue
-            # Basisinfo-Felder direkt in basisinfo schreiben
             if key in self._BASISINFO_KEYS:
                 data.setdefault("basisinfo", {})[key] = val
                 known.add(val.lower())
@@ -366,23 +315,15 @@ class PersonalMemory:
         self._write(data)
 
     def init_name_from_system_prompt(self, system_prompt: str):
-        """
-        Füllt basisinfo.name aus der ersten Zeile des system_prompt,
-        falls er noch leer ist.
-        Erkennt Muster wie: 'Sir Klaus', 'von Max', 'für Anna', 'loyalty to Tom'
-        — nimmt das erste großgeschriebene Wort nach einem Titel/Präposition.
-        """
         data = self._read()
         if data.get("basisinfo", {}).get("name", "").strip():
-            return  # bereits gesetzt → nicht überschreiben
+            return
         first_line = system_prompt.strip().splitlines()[0] if system_prompt.strip() else ""
-        # Suche nach "Sir X", "von X", "für X", "loyalty to X", "assistant of X" etc.
         match = re.search(
             r'\b(?:Sir|von|für|of|to|for|by|mit)\s+([A-ZÄÖÜ][a-zäöüß]+)',
             first_line
         )
         if not match:
-            # Fallback: erstes großgeschriebenes Wort das kein Bot-Name ist
             bot_name = os.getenv("BOT_NAME", "").strip()
             for word in first_line.split():
                 w = word.strip(".,!-—")
@@ -398,10 +339,8 @@ class PersonalMemory:
             print(f"🧠 basisinfo.name aus system_prompt initialisiert: {name}")
 
     def delete_fact(self, id_or_key) -> bool:
-        """Löscht einen Fakt per Nummer (ID) oder Key. Gibt True zurück wenn gefunden."""
         data   = self._read()
         fakten = data.get("fakten", [])
-        # Erst per ID versuchen
         try:
             fid = int(id_or_key)
             new_f = [f for f in fakten if f.get("id") != fid]
@@ -411,7 +350,6 @@ class PersonalMemory:
                 return True
         except ValueError:
             pass
-        # Per Key
         key = id_or_key.lower().strip()
         new_f = [f for f in fakten if f.get("key") != key]
         if len(new_f) < len(fakten):
@@ -554,7 +492,6 @@ class Jarvis:
         self.brain           = brain
 
         self.memory.seed_from_personal(self.personal)
-        # Name aus system_prompt initialisieren falls basisinfo.name noch leer
         self.personal.init_name_from_system_prompt(self.system_prompt)
 
     def load_file(self, path):
@@ -579,9 +516,6 @@ class Jarvis:
                     found_commands.append(f"- /{cmd_name} [{cat}]: {desc}")
         return caps + "\n".join(found_commands) if found_commands else caps + "Keine Module aktiv."
 
-    # ────────────────────────────────────────────────────────────
-    # KERN: Persönliches lernen — direkt via DeepSeek API
-    # ────────────────────────────────────────────────────────────
     async def learn_from_message(self, user_text: str):
         from core.llm_client import get_client
 
@@ -622,9 +556,6 @@ Nur JSON:"""
         except Exception as e:
             print(f"⚠️ learn_from_message: {e}")
 
-    # ────────────────────────────────────────────────────────────
-    # BRAIN FOLDER
-    # ────────────────────────────────────────────────────────────
     def load_brain_file(self, filename: str) -> str:
         brain_dir = os.path.join(PROJECT_DIR, "memory", "brain")
         for subfolder in ["scripts", "notes"]:
@@ -675,19 +606,13 @@ Nur JSON:"""
             return "__LIST__"
         return ""
 
-    # ────────────────────────────────────────────────────────────
-    # UTILS
-    # ────────────────────────────────────────────────────────────
     def log_chat(self, user_text, assistant_text):
         today    = self.get_now().strftime("%Y-%m-%d")
         log_file = os.path.join(LOG_DIR, f"{today}.log")
         with open(log_file, "a", encoding="utf-8") as f:
             f.write(f"USER: {user_text}\n")
             f.write(f"BOT: {assistant_text}\n")
-        # Max 20 Log-Dateien — älteste löschen
-        logs = sorted(
-            [f for f in os.listdir(LOG_DIR) if f.endswith(".log")],
-        )
+        logs = sorted([f for f in os.listdir(LOG_DIR) if f.endswith(".log")])
         while len(logs) > 20:
             os.remove(os.path.join(LOG_DIR, logs.pop(0)))
 
@@ -717,14 +642,10 @@ Nur JSON:"""
             return f"❌ Fehler: {e}"
 
     # ────────────────────────────────────────────────────────────
-    # ACTION SYSTEM — Detect → Propose → Execute
+    # ACTION SYSTEM
     # ────────────────────────────────────────────────────────────
 
     def _detect_action(self, answer: str, context) -> dict | None:
-        """
-        Erkennt ob die LLM-Antwort eine Action enthält.
-        Gibt ein pending-Dict zurück oder None (kein sofortiges Ausführen!).
-        """
         # ── TERMIN_ADD ───────────────────────────────────────────
         if (re.search(r'(?m)^\s*ACTION:\s*TERMIN_ADD\s*$', answer) and
                 re.search(r'(?m)^\s*DATE:\s*.+', answer) and
@@ -774,7 +695,7 @@ Nur JSON:"""
                             f"✉️ {html.escape(msg_txt)}"),
             }
 
-        # ── CUSTOM ACTIONS (core/custom_actions.json) ────────────
+        # ── CUSTOM ACTIONS ────────────────────────────────────────
         if context:
             for ca in _load_custom_actions():
                 action_name = ca.get("action", "").strip().upper()
@@ -799,7 +720,6 @@ Nur JSON:"""
         return None
 
     def _strip_action_block(self, answer: str) -> str:
-        """Entfernt ACTION-Block-Zeilen aus der Antwort für saubere Anzeige."""
         action_keys = {"action:", "date:", "time:", "text:", "channel:",
                        "message:", "target:", "query:", "file:", "run:"}
         lines = answer.splitlines()
@@ -816,17 +736,11 @@ Nur JSON:"""
     async def propose_action(self, update: Update, answer: str,
                              context: ContextTypes.DEFAULT_TYPE = None,
                              user_text: str = "") -> bool:
-        """
-        Erkennt eine Action und fragt per InlineKeyboard nach Bestätigung.
-        Kein sofortiges Ausführen — der User entscheidet!
-        """
         pending = self._detect_action(answer, context)
         if not pending:
             return False
 
-        # user_text speichern damit nach Ausführung ins Gedächtnis aufgenommen werden kann
         pending["user_text"] = user_text
-
         context.user_data["pending_action"] = pending
 
         keyboard = InlineKeyboardMarkup([[
@@ -841,7 +755,6 @@ Nur JSON:"""
         return True
 
     async def execute_pending_action(self, message, context, pending: dict):
-        """Führt eine bestätigte pending Action wirklich aus."""
         action_type = pending.get("type")
         answer      = pending.get("answer", "")
 
@@ -915,7 +828,7 @@ Nur JSON:"""
                 msg_txt = msg_m.group(1).strip()
                 try:
                     from modules.discord_ki_server import send_to_ki_server
-                except ImportError:
+                except ModuleNotFoundError:
                     from discord_ki_server import send_to_ki_server
                 result = await send_to_ki_server(ch_name, msg_txt)
                 if result.get("ok"):
@@ -932,10 +845,9 @@ Nur JSON:"""
             command     = ca.get("command", "").strip().lstrip("/").lower()
             action_name = ca.get("action", "?")
 
-            # Minimales FakeUpdate damit Module-Callbacks funktionieren
             class _FakeUpdate:
                 def __init__(self, msg):
-                    self.message      = msg
+                    self.message        = msg
                     self.effective_chat = getattr(msg, "chat", None)
                     self.effective_user = None
 
@@ -967,9 +879,6 @@ Nur JSON:"""
         if not user_text:
             return
 
-        # ── Pending-Action per Text-Bestätigung auflösen ─────────
-        # Wenn eine Action auf Bestätigung wartet und User schreibt "Ja" o.ä.
-        # → direkt ausführen ohne LLM-Roundtrip (verhindert doppelte Bestätigung)
         pending = context.user_data.get("pending_action")
         if pending:
             text_lower = user_text.strip().lower()
@@ -989,14 +898,11 @@ Nur JSON:"""
                 context.user_data.pop("pending_action")
                 await update.message.reply_text("❌ Abgebrochen.")
                 return
-        # ─────────────────────────────────────────────────────────
 
         await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
 
-        # 1. Persönliche Daten frisch laden
         personal_text = self.personal.as_text()
 
-        # 2. Brain
         brain_data = ""
         if self.brain:
             try:
@@ -1004,10 +910,8 @@ Nur JSON:"""
             except Exception as e:
                 brain_data = f"Brain-Fehler: {e}"
 
-        # 3. Vector Memory
         past_context = self.memory.search_user(user_text)
 
-        # 4. Brain Folder
         brain_file_section = ""
         brain_request      = self.detect_brain_request(user_text)
         if brain_request == "__LIST__":
@@ -1016,13 +920,11 @@ Nur JSON:"""
             fc = self.load_brain_file(brain_request)
             brain_file_section = f"\n{fc}" if fc else f"\n### HINWEIS: '{brain_request}' nicht gefunden."
 
-        # 5. Discord-Kontext — RICS weiß mit wem er auf Discord gesprochen hat
         discord_section = ""
         dc = _get_discord_context()
         if dc:
             discord_section = f"\n{dc}"
 
-        # 5b. Energie-Live-Daten (EcoTracker + Noah 2000)
         energie_section = ""
         _energie_keywords = ["strom", "solar", "noah", "speicher", "einspeisung", "netzbezug",
                               "watt", "kwh", "soc", "ladestand", "laden", "entladen", "ecotracker"]
@@ -1054,7 +956,6 @@ Nur JSON:"""
             if _energie_parts:
                 energie_section = "\n### LIVE-ENERGIE:\n" + "\n".join(_energie_parts)
 
-        # 6. System Message
         now_str        = self.brain.get_now().strftime("%d.%m.%Y %H:%M") if self.brain else datetime.now().strftime("%d.%m.%Y %H:%M")
         brain_section  = f"\n### BRAIN:\n{brain_data}"        if brain_data and brain_data != "KEINE DATEN" else ""
         memory_section = f"\n### GEDÄCHTNIS:\n{past_context}" if past_context else ""
@@ -1090,7 +991,6 @@ Nur JSON:"""
             + [{"role": "user", "content": user_text}]
         )
 
-        # 7. LLM
         try:
             from core.llm_client import get_client
             groq = get_client()
@@ -1125,7 +1025,6 @@ Nur JSON:"""
 
             answer = await groq.chat_stream(msgs, on_update, on_fallback)
 
-            # 8. Actions — zeige Preview, warte auf Bestätigung
             if await self.propose_action(update, answer, context, user_text=user_text):
                 clean = self._strip_action_block(answer)
                 if clean:
@@ -1144,14 +1043,12 @@ Nur JSON:"""
                         pass
                 return
 
-            # 9. Gedächtnis
             self.chat_history.append({"role": "user",      "content": user_text})
             self.chat_history.append({"role": "assistant",  "content": answer})
             self.memory.add_user(user_text)
             self.memory.add_assistant(answer)
             self.log_chat(user_text, answer)
 
-            # 10a. Interessen sofort aktualisieren (kein Warten auf Proactive-Zyklus)
             try:
                 from modules.proactive_brain import update_interests_from_chat
                 update_interests_from_chat([
@@ -1161,7 +1058,6 @@ Nur JSON:"""
             except Exception as e:
                 print(f"⚠️ update_interests: {e}")
 
-            # 10. Persönliches lernen — im Hintergrund via DeepSeek
             asyncio.create_task(self.learn_from_message(user_text))
 
         except Exception as e:
@@ -1173,10 +1069,6 @@ Nur JSON:"""
 # ════════════════════════════════════════════════════════════════
 
 async def action_confirm_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    Reagiert auf ✅ Ausführen / ❌ Abbrechen bei Action-Previews.
-    Holt die pending_action aus user_data und führt sie aus (oder verwirft sie).
-    """
     query = update.callback_query
     await query.answer()
 
@@ -1185,7 +1077,6 @@ async def action_confirm_callback(update: Update, context: ContextTypes.DEFAULT_
         if not pending:
             await query.edit_message_text("⚠️ Keine ausstehende Action gefunden.")
             return
-        # Preview-Nachricht aktualisieren → zeigt dass es läuft
         try:
             await query.edit_message_reply_markup(reply_markup=None)
         except Exception:
@@ -1194,10 +1085,6 @@ async def action_confirm_callback(update: Update, context: ContextTypes.DEFAULT_
         jarvis: Jarvis = context.application.bot_data["jarvis"]
         await jarvis.execute_pending_action(query.message, context, pending)
 
-        # ── Action ins Gedächtnis aufnehmen ──────────────────────
-        # Originale LLM-Antwort (mit ACTION:-Block) speichern, damit das LLM
-        # beim nächsten Turn das korrekte ACTION-Format in seiner History sieht
-        # und es nicht durch eine verkürzte Note ersetzt.
         user_text_for_history = pending.get("user_text", "")
         original_answer       = pending.get("answer", "")
         preview_clean         = re.sub(r"<[^>]+>", "", pending.get("preview", "")).strip()
@@ -1259,13 +1146,6 @@ reflexion_wrapper.category    = "Gedächtnis"
 
 
 async def merke_wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """
-    /merke <key> = <wert>  — direkt speichern ohne LLM
-    Beispiele:
-      /merke job = Landratsamt Mühldorf
-      /merke bester_freund = Stas
-      /merke auto = BMW 3er
-    """
     jarvis: Jarvis = context.application.bot_data["jarvis"]
     text = " ".join(context.args)
     if "=" not in text:
@@ -1284,7 +1164,6 @@ merke_wrapper.category    = "Gedächtnis"
 
 
 async def ichnbin_wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/ichnbin — zeigt alles was RICS über dich weiß."""
     jarvis: Jarvis = context.application.bot_data["jarvis"]
     text = jarvis.personal.as_text()
     await update.message.reply_text(f"<pre>{html.escape(text)}</pre>", parse_mode="HTML")
@@ -1294,11 +1173,9 @@ ichnbin_wrapper.category    = "Gedächtnis"
 
 
 async def vergiss_wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/vergiss [Nr|Key] — zeigt Fakten-Liste oder löscht per Nummer."""
     jarvis: Jarvis = context.application.bot_data["jarvis"]
     arg = " ".join(context.args).strip()
     if not arg:
-        # Kein Argument → Liste anzeigen mit Hinweis
         text = jarvis.personal.as_text()
         await update.message.reply_text(
             f"<pre>{html.escape(text)}</pre>\n\n"
@@ -1360,11 +1237,10 @@ async def post_shutdown(app: Application):
 
 
 # ════════════════════════════════════════════════════════════════
-# SETUP MODE — startet nur Flask wenn TELEGRAM_TOKEN fehlt
+# SETUP MODE
 # ════════════════════════════════════════════════════════════════
 
 def _check_first_run() -> bool:
-    """Gibt True zurück wenn Pflichtfelder fehlen → Setup Mode nötig."""
     token   = os.getenv("TELEGRAM_TOKEN", "").strip()
     chat_id = os.getenv("CHAT_ID", "").strip()
     pin     = os.getenv("WEB_PIN", "").strip()
@@ -1372,11 +1248,6 @@ def _check_first_run() -> bool:
 
 
 def _start_setup_mode():
-    """
-    Startet nur das Webinterface (Flask) ohne Telegram.
-    Der User kann dort alle ENV-Variablen eintragen und speichern.
-    Danach muss bot.py neu gestartet werden.
-    """
     try:
         sys.path.insert(0, os.path.join(PROJECT_DIR, "modules"))
         import importlib
@@ -1406,32 +1277,21 @@ def _start_setup_mode():
 
     flask_thread = threading.Thread(
         target=lambda: web_app.app.run(
-            host="0.0.0.0",
-            port=port,
-            threaded=True,
-            use_reloader=False
+            host="0.0.0.0", port=port, threaded=True, use_reloader=False
         ),
         daemon=False
     )
     flask_thread.start()
-
     try:
         flask_thread.join()
     except KeyboardInterrupt:
-        print("\n👋 Setup beendet. Starte nach dem Speichern neu mit: python bot.py")
+        print("\n👋 Setup beendet.")
 
 
 def _free_web_port():
-    """
-    Killt fremde Prozesse die den Web-Port belegen.
-    Mit Watchdog-Pattern ist der Port normalerweise frei zwischen
-    Restarts. Dies ist Belt-and-Suspenders für Fremdprozesse.
-    """
     import signal, socket, time
     port = int(os.getenv("WEB_PORT", 5001))
     own  = os.getpid()
-
-    # Fremde Prozesse killen
     try:
         out = subprocess.check_output(
             ["lsof", "-ti", f"tcp:{port}"], stderr=subprocess.DEVNULL
@@ -1452,11 +1312,9 @@ def _free_web_port():
 
 def main():
     _free_web_port()
-    # ── SETUP MODE CHECK ─────────────────────────────────────────
     if _check_first_run():
         _start_setup_mode()
         return
-    # ─────────────────────────────────────────────────────────────
 
     sm     = SessionManager()
     eb     = EventBus()

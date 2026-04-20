@@ -2,6 +2,7 @@ Update 2.0
 
 - discord_ki_server.py veröffentlichung Testphase 1
 - Moltbook.py Log fehler behoben
+- web_app.py Bugfix
 
 
 

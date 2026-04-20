@@ -758,6 +758,22 @@ Nur JSON:"""
                             f"✉️ {html.escape(display)}"),
             }
 
+        # ── DISCORD_KI_MESSAGE ────────────────────────────────────
+        if (re.search(r'(?m)^\s*ACTION:\s*DISCORD_KI_MESSAGE\s*$', answer) and
+                re.search(r'(?m)^\s*CHANNEL:\s*.+', answer) and
+                re.search(r'(?m)^\s*MESSAGE:\s*.+', answer)):
+            ch_m  = re.search(r"CHANNEL:\s*(#?\S+)", answer, re.I)
+            msg_m = re.search(r"MESSAGE:\s*(.+)",    answer, re.I)
+            ch_name = ch_m.group(1).strip().lstrip("#")
+            msg_txt = msg_m.group(1).strip()
+            return {
+                "type":    "DISCORD_KI_MESSAGE",
+                "answer":  answer,
+                "preview": (f"🤖 <b>KI-Server Nachricht</b>\n"
+                            f"📢 #{html.escape(ch_name)}\n"
+                            f"✉️ {html.escape(msg_txt)}"),
+            }
+
         # ── CUSTOM ACTIONS (core/custom_actions.json) ────────────
         if context:
             for ca in _load_custom_actions():
@@ -887,6 +903,27 @@ Nur JSON:"""
                 await message.reply_text(f"✅ Discord Nachricht gesendet → #{ch_name}")
             except Exception as e:
                 await message.reply_text(f"❌ Discord Fehler: {e}")
+
+        # ── DISCORD_KI_MESSAGE ───────────────────────────────────
+        elif action_type == "DISCORD_KI_MESSAGE":
+            try:
+                ch_m  = re.search(r"CHANNEL:\s*(#?\S+)", answer, re.I)
+                msg_m = re.search(r"MESSAGE:\s*(.+)",    answer, re.I)
+                if not ch_m or not msg_m:
+                    await message.reply_text("❌ Kanal oder Nachricht fehlt"); return
+                ch_name = ch_m.group(1).strip().lstrip("#")
+                msg_txt = msg_m.group(1).strip()
+                try:
+                    from modules.discord_ki_server import send_to_ki_server
+                except ImportError:
+                    from discord_ki_server import send_to_ki_server
+                result = await send_to_ki_server(ch_name, msg_txt)
+                if result.get("ok"):
+                    await message.reply_text(f"✅ KI-Server Nachricht gesendet → #{ch_name}")
+                else:
+                    await message.reply_text(f"❌ KI-Server Fehler: {result.get('error','?')}")
+            except Exception as e:
+                await message.reply_text(f"❌ KI-Server Fehler: {e}")
 
         # ── CUSTOM ACTION ────────────────────────────────────────
         elif action_type == "CUSTOM":
@@ -1022,12 +1059,30 @@ Nur JSON:"""
         brain_section  = f"\n### BRAIN:\n{brain_data}"        if brain_data and brain_data != "KEINE DATEN" else ""
         memory_section = f"\n### GEDÄCHTNIS:\n{past_context}" if past_context else ""
 
+        # KI-Server Action-Hint — nur wenn discord_ki_server geladen ist
+        ki_server_section = ""
+        try:
+            from modules.discord_ki_server import ALLOWED_GUILD_ID as _ki_guild
+            ki_server_section = (
+                "\n### KI-SERVER ACTION (separater Bot-only Server):\n"
+                "DISCORD_KI_MESSAGE NUR wenn der Nutzer explizit sagt: "
+                "'KI-Server', 'Moltbook', 'KI-Kanal', 'den Bots schreiben' oder 'Bot-Server'.\n"
+                "DISCORD_MESSAGE wenn nur 'Discord' ohne diese Schlüsselwörter vorkommt.\n"
+                "Niemals beide Actions gleichzeitig. Im Zweifel → DISCORD_MESSAGE.\n"
+                "Format: ACTION: DISCORD_KI_MESSAGE / CHANNEL: #kanal / MESSAGE: text\n"
+                "Kanäle: allgemein, ki-austausch, autonomie-und-kontrolle, philosophie-ki, "
+                "selbstreflexion, kreativitaet, technik-und-architektur, langzeitgedaechtnis, "
+                "energie-und-realtime, erfahrungen-des-tages"
+            )
+        except ImportError:
+            pass
+
         system_msg = f"""{self.system_prompt}
 
 ━━━ AKTUELLE ZEIT: {now_str} ━━━
 (Diese Zeit ist verbindlich — verwende sie für alle zeitbezogenen Aussagen.)
 
-{personal_text}{brain_section}{memory_section}{brain_file_section}{discord_section}{energie_section}"""
+{personal_text}{brain_section}{memory_section}{brain_file_section}{discord_section}{energie_section}{ki_server_section}"""
 
         msgs = (
             [{"role": "system", "content": system_msg}]

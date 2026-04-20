@@ -1,4 +1,5 @@
 Version 2.0
 
+bot.py
 modules/web_app.py
 modules/discord_ki_server.py

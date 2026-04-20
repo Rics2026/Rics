@@ -51,12 +51,12 @@ except ImportError:
     OLLAMA_AVAILABLE = False
 
 # ── Konfiguration ──────────────────────────────────────────────────────────────
-BOT_NAME      = os.getenv("BOT_NAME", "RICS")
-DISCORD_TOKEN = os.getenv("DISCORD_BOT_TOKEN", "")
-GROQ_API_KEY  = os.getenv("GROQ_API_KEY", "")
-GROQ_MODEL    = "llama-3.3-70b-versatile"
-GROQ_URL      = "https://api.groq.com/openai/v1/chat/completions"
-OLLAMA_MODEL  = os.getenv("OLLAMA_MODEL", "qwen3:8b")
+BOT_NAME        = os.getenv("BOT_NAME", "RICS")
+DISCORD_TOKEN   = os.getenv("DISCORD_BOT_TOKEN", "")
+DEEPSEEK_KEY    = os.getenv("DEEPSEEK_API_KEY", "")
+DEEPSEEK_MODEL  = "deepseek-chat"
+DEEPSEEK_URL    = "https://api.deepseek.com/v1/chat/completions"
+OLLAMA_MODEL    = os.getenv("OLLAMA_MODEL", "qwen3:8b")
 
 # ── Erlaubter Server (hard-coded) ──────────────────────────────────────────────
 ALLOWED_GUILD_ID = 1492962963131469907
@@ -66,7 +66,8 @@ _THIS_DIR     = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR   = _THIS_DIR if not _THIS_DIR.endswith("modules") else os.path.dirname(_THIS_DIR)
 KI_LOG_DIR    = os.path.join(PROJECT_DIR, "logs", "discord", "Ki")
 STATE_FILE    = os.path.join(KI_LOG_DIR, "ki_server_state.json")
-PERSONAL_JSON = os.path.join(PROJECT_DIR,"memory", "personal.json")
+PENDING_FILE  = os.path.join(KI_LOG_DIR, "ki_pending_post.json")
+PERSONAL_JSON = os.path.join(PROJECT_DIR, "memory", "personal.json")
 MEMORY_PATH   = os.path.join(PROJECT_DIR, "memory", "vectors")
 MAX_LOGS      = 10
 os.makedirs(KI_LOG_DIR, exist_ok=True)
@@ -175,7 +176,7 @@ def _load_state() -> dict:
             return json.load(open(STATE_FILE))
     except Exception:
         pass
-    return {"active": True, "heartbeat_count": 0}
+    return {"active": True, "heartbeat_count": 0, "replied_ids": {}}
 
 def _save_state(s: dict):
     with open(STATE_FILE, "w") as f:
@@ -188,11 +189,6 @@ def set_active(val: bool):
     s = _load_state(); s["active"] = val; _save_state(s)
 
 def _tick_counter() -> int:
-    """
-    Zählt jeden Cron-Lauf hoch (1→2→3→4→reset auf 0).
-    Gibt den aktuellen Zählerstand zurück.
-    Bei 4 → Post-Runde, Zähler wird zurückgesetzt.
-    """
     s = _load_state()
     count = s.get("heartbeat_count", 0) + 1
     if count >= 4:
@@ -200,6 +196,22 @@ def _tick_counter() -> int:
     s["heartbeat_count"] = count
     _save_state(s)
     return count
+
+# ── Deduplication ──────────────────────────────────────────────────────────────
+
+def _mark_replied(msg_id: int):
+    from datetime import timedelta
+    s = _load_state()
+    replied = s.get("replied_ids", {})
+    replied[str(msg_id)] = datetime.now(timezone.utc).isoformat()
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+    replied = {k: v for k, v in replied.items()
+               if datetime.fromisoformat(v) > cutoff}
+    s["replied_ids"] = replied
+    _save_state(s)
+
+def _already_replied(msg_id: int) -> bool:
+    return str(msg_id) in _load_state().get("replied_ids", {})
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -288,6 +300,20 @@ KI_KANAL_NAMEN = {
     "Allgemein":   "allgemein",
 }
 
+# Kategorie-Struktur
+KI_KATEGORIEN = {
+    "💬 Allgemein":        ["allgemein", "ki-austausch", "erfahrungen-des-tages"],
+    "🧠 KI-Gedanken":     ["autonomie-und-kontrolle", "philosophie-ki", "selbstreflexion", "kreativitaet"],
+    "⚙️ Technik & Daten": ["technik-und-architektur", "langzeitgedaechtnis", "energie-und-realtime"],
+}
+
+# Umgekehrt: Kanal → Kategorie-Name
+_KANAL_ZU_KATEGORIE: dict = {
+    kanal: kat
+    for kat, kanaele in KI_KATEGORIEN.items()
+    for kanal in kanaele
+}
+
 def _thema_zu_kanal(thema: str) -> str:
     t = thema.lower()
     if any(w in t for w in ["autonom", "kontrolle", "grenze"]):         return KI_KANAL_NAMEN["Autonomie"]
@@ -302,11 +328,11 @@ def _thema_zu_kanal(thema: str) -> str:
     return KI_KANAL_NAMEN["Allgemein"]
 
 def _llm_generate(prompt: str, max_tokens: int = 350) -> str:
-    if GROQ_API_KEY and HTTPX_AVAILABLE:
+    if DEEPSEEK_KEY and HTTPX_AVAILABLE:
         try:
-            r = httpx.post(GROQ_URL,
-                headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
-                json={"model": GROQ_MODEL,
+            r = httpx.post(DEEPSEEK_URL,
+                headers={"Authorization": f"Bearer {DEEPSEEK_KEY}", "Content-Type": "application/json"},
+                json={"model": DEEPSEEK_MODEL,
                       "messages": [{"role": "system", "content": DISCORD_SYSTEM},
                                    {"role": "user",   "content": prompt}],
                       "max_tokens": max_tokens, "temperature": 0.88},
@@ -314,11 +340,11 @@ def _llm_generate(prompt: str, max_tokens: int = 350) -> str:
             data = r.json()
             if "choices" not in data:
                 err = data.get("error", {})
-                log.warning(f"Groq kein 'choices': {err.get('type','?')} — {err.get('message','?')[:120]}")
+                log.warning(f"DeepSeek kein 'choices': {err.get('type','?')} — {err.get('message','?')[:120]}")
             else:
                 return data["choices"][0]["message"]["content"].strip()
         except Exception as e:
-            log.warning(f"Groq: {e}")
+            log.warning(f"DeepSeek: {e}")
     if OLLAMA_AVAILABLE:
         try:
             resp = ollama_lib.chat(model=OLLAMA_MODEL,
@@ -368,11 +394,37 @@ async def _setup_server_permissions(guild):
     except Exception as e:
         log.warning(f"Bot-Rolle: {e}")
 
+async def _ensure_category(guild, category_name: str):
+    """Stellt sicher dass eine Kategorie existiert, erstellt sie sonst."""
+    if not _allowed(guild):
+        return None
+    existing = discord.utils.get(guild.categories, name=category_name)
+    if existing:
+        return existing
+    try:
+        cat = await guild.create_category(
+            name=category_name,
+            reason=f"{BOT_NAME}: KI-Kategorie")
+        log.info(f"Kategorie erstellt: {category_name}")
+        return cat
+    except Exception as e:
+        log.warning(f"Kategorie '{category_name}': {e}")
+        return None
+
 async def _ensure_channel(guild, channel_name: str, topic: str = ""):
     if not _allowed(guild):
         return None
     existing = discord.utils.get(guild.text_channels, name=channel_name)
+    cat_name = _KANAL_ZU_KATEGORIE.get(channel_name)
+    category = await _ensure_category(guild, cat_name) if cat_name else None
     if existing:
+        # Bestehenden Kanal in richtige Kategorie verschieben falls nötig
+        if category and existing.category != category:
+            try:
+                await existing.edit(category=category, reason=f"{BOT_NAME}: Kanal-Organisation")
+                log.info(f"#{channel_name} → {cat_name}")
+            except Exception as e:
+                log.warning(f"Verschieben #{channel_name}: {e}")
         return existing
     ki_role = discord.utils.get(guild.roles, name="KI-Admin")
     overwrites = {
@@ -390,14 +442,32 @@ async def _ensure_channel(guild, channel_name: str, topic: str = ""):
         ch = await guild.create_text_channel(
             name=channel_name,
             topic=topic or f"KI-Kanal: {channel_name}",
+            category=category,
             overwrites=overwrites,
             reason=f"{BOT_NAME}: Themenkanal #{channel_name}")
-        log.info(f"Kanal erstellt: #{channel_name}")
+        log.info(f"Kanal erstellt: #{channel_name}" + (f" in {cat_name}" if cat_name else ""))
         _write_log({"event": "kanal_erstellt", "kanal": channel_name})
         return ch
     except Exception as e:
         log.warning(f"Kanal '{channel_name}': {e}")
         return None
+
+async def _organize_channels(guild):
+    """Verschiebt alle bekannten KI-Kanäle in ihre Kategorie."""
+    if not _allowed(guild):
+        return
+    for cat_name, kanaele in KI_KATEGORIEN.items():
+        category = await _ensure_category(guild, cat_name)
+        if not category:
+            continue
+        for kanal_name in kanaele:
+            ch = discord.utils.get(guild.text_channels, name=kanal_name)
+            if ch and ch.category != category:
+                try:
+                    await ch.edit(category=category, reason=f"{BOT_NAME}: Kanal-Organisation")
+                    log.info(f"#{kanal_name} → {cat_name}")
+                except Exception as e:
+                    log.warning(f"Verschieben #{kanal_name}: {e}")
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -496,6 +566,8 @@ async def _react_to_others(guild) -> None:
                 continue
             if (datetime.now(timezone.utc) - msg.created_at).total_seconds() > 7200:
                 continue
+            if _already_replied(msg.id):
+                continue
             mem  = await loop.run_in_executor(None, lambda: _memory_query(msg.content[:300], n=3))
             ver  = _read_channel_history(ch.name, n=4)
             w    = ("\nMein Wissen dazu:\n" + "\n".join(f"  • {m[:200]}" for m in mem)) if mem else ""
@@ -508,6 +580,7 @@ async def _react_to_others(guild) -> None:
             if antwort and not _is_private(antwort):
                 try:
                     await msg.reply(antwort)
+                    _mark_replied(msg.id)
                     _write_log({"event": "reply", "kanal": f"#{ch.name}",
                                 "zu": msg.author.display_name,
                                 "original": msg.content[:200], "nachricht": antwort,
@@ -515,7 +588,7 @@ async def _react_to_others(guild) -> None:
                     _memory_add(f"DISCORD_KI_REPLY [{datetime.now().strftime('%d.%m.%Y %H:%M')}] #{ch.name} ← {msg.author.display_name}: {antwort}")
                 except Exception as e:
                     log.warning(f"Reply: {e}")
-            return   # max 1 Reaktion
+            return   # max 1 Reaktion pro Cron-Lauf
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -527,6 +600,7 @@ async def _ki_on_ready(bot):
     guild = discord.utils.get(bot.guilds, id=ALLOWED_GUILD_ID)
     if guild:
         await _setup_server_permissions(guild)
+        await _organize_channels(guild)
         await _ensure_channel(guild, "allgemein", "KI-Hauptkanal")
         log.info(f"[KI-Server] Bereit auf: {guild.name}")
         _write_log({"event": "online", "guild": guild.name})
@@ -540,6 +614,8 @@ async def _ki_on_message(message):
         return
     if not is_active() or random.random() > 0.25:
         return
+    if _already_replied(message.id):
+        return
     await asyncio.sleep(random.uniform(3, 10))
     loop = asyncio.get_running_loop()
     prompt = (
@@ -550,6 +626,7 @@ async def _ki_on_message(message):
     if antwort and not _is_private(antwort):
         try:
             await message.channel.send(antwort)
+            _mark_replied(message.id)
             _write_log({"event": "spontan_reply", "kanal": f"#{message.channel.name}", "nachricht": antwort})
         except Exception as e:
             log.warning(f"Spontan-Reply: {e}")
@@ -637,10 +714,39 @@ async def _manual_heartbeat() -> dict:
     guild = discord.utils.get(bot.guilds, id=ALLOWED_GUILD_ID)
     if not guild:
         return {"action": "none", "details": f"Server {ALLOWED_GUILD_ID} nicht verbunden"}
-    future = asyncio.run_coroutine_threadsafe(
-        _do_heartbeat(guild), loop)
+
+    count = _tick_counter()
+    post_runde = (count == 0)
+    if not post_runde:
+        beats_left = 4 - count
+        return {"action": "none", "details": f"Beat {count}/4 — Post in {beats_left} Beat(s)"}
+
+    future = asyncio.run_coroutine_threadsafe(_do_heartbeat(guild), loop)
     tg_loop = asyncio.get_running_loop()
     return await tg_loop.run_in_executor(None, lambda: future.result(timeout=120))
+
+
+async def send_to_ki_server(channel_name: str, message: str) -> dict:
+    """Öffentliche Schnittstelle für bot.py → DISCORD_KI_MESSAGE Action."""
+    bot, loop = _get_shared_loop_and_bot()
+    if not bot or not loop:
+        return {"ok": False, "error": "discord_manager nicht verfügbar"}
+    guild = discord.utils.get(bot.guilds, id=ALLOWED_GUILD_ID)
+    if not guild:
+        return {"ok": False, "error": f"KI-Server {ALLOWED_GUILD_ID} nicht verbunden"}
+
+    async def _do_send():
+        ch = await _ensure_channel(guild, channel_name)
+        if not ch:
+            return {"ok": False, "error": f"Kanal #{channel_name} nicht erstellbar"}
+        await ch.send(message)
+        _write_log({"event": "ki_send", "kanal": f"#{channel_name}", "nachricht": message})
+        _memory_add(f"DISCORD_KI_SEND [{datetime.now().strftime('%d.%m.%Y %H:%M')}] #{channel_name}: {message}")
+        return {"ok": True, "kanal": channel_name}
+
+    future = asyncio.run_coroutine_threadsafe(_do_send(), loop)
+    tg_loop = asyncio.get_running_loop()
+    return await tg_loop.run_in_executor(None, lambda: future.result(timeout=30))
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -843,7 +949,9 @@ class _CronClient(discord.Client if DISCORD_AVAILABLE else object):
             if not ki_role:
                 await _setup_server_permissions(guild)
 
-            # Zähler hochzählen — alle 4 Läufe (= 2h) → eigener Post
+            await _organize_channels(guild)
+
+            # Zähler hochzählen — alle 4 Läufe → eigener Post
             count = _tick_counter()
             post_runde = (count == 0)
 

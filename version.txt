@@ -1,6 +1,7 @@
 Version 1.8
 
 modules/discord_ki_server.py
+modules/discord_manager.py
 modules/moltbook.py
 modules/web_app.py
 modules/orchestrator.py

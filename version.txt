@@ -1,6 +1,5 @@
 Version 1.8
 
-bot.py
-modules/updater.py
-modules/auto_benzin.py
-modules/Wetter.py
+modules/discord_ki_server.py
+modules/moltbook.py
+modules/web_app.py

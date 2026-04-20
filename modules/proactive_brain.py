@@ -528,6 +528,55 @@ async def _check_vision_memory(brain: Brain, name: str, now_str: str) -> str | N
 
     return None
 
+# ══════════════════════════════════════════════════════════
+# NOAH 2000 SOC-WATCHER
+# ══════════════════════════════════════════════════════════
+
+LAST_NOAH_WARN = {"voll": 0, "leer": 0}
+
+async def _check_noah_soc(brain: Brain) -> tuple[str | None, str | None]:
+    """
+    Prüft Noah 2000 SOC und gibt (msg, key) zurück wenn eine Meldung fällig ist.
+    Schwellwerte aus .env:
+      NOAH_SOC_VOLL  — Meldung ab X% (Standard: 100)
+      NOAH_SOC_LEER  — Meldung unter X% (Standard: 20)
+    Cooldown: 3h je Richtung.
+    """
+    try:
+        from modules.solar import _fetch_noah
+        d = _fetch_noah()
+        if not d or not d.get("online"):
+            return None, None
+
+        soc         = d["soc"]
+        now_ts      = brain.get_now().timestamp()
+        soc_voll    = float(os.getenv("NOAH_SOC_VOLL", "100"))
+        soc_leer    = float(os.getenv("NOAH_SOC_LEER", "20"))
+        cooldown    = 10800  # 3 Stunden
+
+        if soc >= soc_voll and (now_ts - LAST_NOAH_WARN["voll"]) > cooldown:
+            LAST_NOAH_WARN["voll"] = now_ts
+            ppv = d.get("ppv", 0)
+            pac = d.get("pac", 0)
+            msg = (
+                f"🔋 *Noah 2000 ist voll!* ({soc:.0f}%)\n"
+                f"☀️ Solar: `{ppv:.0f}` W  🔌 Einspeisung: `{pac:.0f}` W"
+            )
+            return msg, "noah_voll"
+
+        if soc <= soc_leer and (now_ts - LAST_NOAH_WARN["leer"]) > cooldown:
+            LAST_NOAH_WARN["leer"] = now_ts
+            msg = (
+                f"⚠️ *Noah 2000 fast leer!* ({soc:.0f}%)\n"
+                f"Entlädt gerade mit `{d.get('discharge', 0):.0f}` W."
+            )
+            return msg, "noah_leer"
+
+    except Exception as e:
+        print(f"[Noah SOC-Check] Fehler: {e}")
+    return None, None
+
+
 async def _llm(prompt: str) -> str:
     msgs = [{"role": "user", "content": prompt}]
     # 1) DeepSeek
@@ -828,6 +877,13 @@ async def autonomous_thinker(context: ContextTypes.DEFAULT_TYPE):
                     await context.bot.send_message(chat_id=chat_id, text=msg, parse_mode='Markdown')
                     _web_push(msg)
                     return
+
+    # ── P3b: NOAH SOC ─────────────────────────────────────
+    noah_msg, noah_key = await _check_noah_soc(brain)
+    if noah_msg:
+        await context.bot.send_message(chat_id=chat_id, text=noah_msg, parse_mode='Markdown')
+        _web_push(noah_msg)
+        return
 
     # ── P4: MOLTBOOK GEDANKEN ─────────────────────────────
     try:

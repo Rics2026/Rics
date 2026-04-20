@@ -186,6 +186,10 @@ ENV_GROUPS = {
     "🌐 APIs":          [("WETTER_TOKEN","password"),("YOUTUBE_API_KEY","password"),("MOLTBOOK_API_KEY","password"),
                          ("ECOTRACKER_IP","text"),("TANKERKOENIG_API_KEY","password"),("FLUX_API_TOKEN","password")],
 
+    # ── Energie / Growatt Noah 2000 ─────────────────────────────────────
+    "🔋 Energie":       [("GROWATT_USER","text"),("GROWATT_PASS","password"),("GROWATT_NOAH_SN","text"),
+                         ("NOAH_SOC_VOLL","text"),("NOAH_SOC_LEER","text")],
+
     # ── Mail ────────────────────────────────────────────────────────────
     "📧 Mail":          [("MAIL_IMAP_SERVER","text"),("MAIL_ADDRESS","text"),("MAIL_PASSWORD","password"),
                          ("MAIL_CHECK_INTERVAL","text")],

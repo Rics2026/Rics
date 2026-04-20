@@ -139,6 +139,42 @@ FÜR STATUS/BALANCE-MODULE (APIs mit Guthaben, Kontostand, Verbrauch):
 - Trennlinie immer: "￣￣￣￣￣￣￣￣￣￣￣￣￣"
 - Jeder Block (Guthaben / Verbrauch / Timestamp) durch Trennlinie abgeteilt
 
+FÜR JOB-QUEUE-CALLBACKS (heartbeat, cron, run_repeating):
+- NIEMALS context.job.chat_id verwenden — das existiert nur in CommandHandlern.
+- Stattdessen immer: chat_id = os.getenv("TELEGRAM_CHAT_ID")
+- Zeitwerte aus .env (z.B. PAYPAL_NIGHT_START) können ohne Minuten kommen ("22" statt "22:00").
+  Immer beide Formate parsen:
+  for fmt in ["%H:%M", "%H"]:
+      try: t = datetime.strptime(val, fmt).time(); break
+      except: continue
+- chat_id immer exakt so laden (CHAT_ID ist der korrekte Key in dieser Umgebung):
+  chat_id = os.getenv("CHAT_ID")
+- NIEMALS os.getenv("TELEGRAM_CHAT_ID") verwenden — dieser Key existiert nicht.
+- NIEMALS os.getenv("TELEGRAM_TOKEN") verwenden — der Bot-Token heißt hier TELEGRAM_TOKEN, aber für chat_id immer CHAT_ID.
+- Immer prüfen: if not chat_id: logger.error(...); return
+
+FÜR COMMAND-REGISTRIERUNG:
+- Wenn die Mission explizite Command-Namen vorgibt (z.B. /wetteralarm_status, /wetteralarm_on), diese EXAKT als separate CommandHandler registrieren.
+- NIEMALS als Subcommands eines einzelnen Handlers umbauen — das entspricht nicht der Mission.
+- Jede Handler-Funktion bekommt ihren eigenen CommandHandler-Eintrag in setup(app).
+
+FÜR PERSISTENTE DATEN (Listen, Dicts, Status die Neustarts überleben müssen):
+- NIEMALS nur als globale Python-Variable im RAM speichern — geht bei Neustart verloren.
+- Immer in einer JSON-Datei im Ordner memory/ persistieren.
+- Beim Modulstart aus der JSON laden, bei jeder Änderung sofort zurückschreiben.
+- Beispiel: pending_alerts nicht als _pending_alerts = [] sondern als memory/wetteralarm_pending.json
+
+FÜR EXTERNE API-MODULE (KRITISCH — HALLUZINATIONS-SCHUTZ):
+- NIEMALS Felder verwenden die du nicht mit Sicherheit kennst. Wenn du ein Feld nicht kennst → .get() mit Fallback.
+- Deduplication NIEMALS über ein halluziniertes 'id'-Feld. Immer zusammengesetzten Key aus sicheren Feldern bauen:
+  dedup_key = f"{item.get('field1','')}_{item.get('field2',0)}_{item.get('field3',0)}"
+- Wenn ein RECHERCHE-ERGEBNIS vorliegt: Verwende NUR die Felder die dort tatsächlich aufgetaucht sind.
+- Wenn kein Recherche-Ergebnis: Nutze nur Felder die in der offiziellen Dokumentation explizit genannt werden.
+- Wenn ein RECHERCHE-ERGEBNIS vorliegt das einen funktionierenden Endpoint (HTTP 200) nennt: diesen verwenden.
+- Wenn das Recherche-Ergebnis einen 401/403-Fehler zeigt: KEINEN kostenpflichtigen Endpoint verwenden,
+  sondern den kostenlosen Fallback-Endpoint aus dem Recherche-Ergebnis nehmen.
+- Bei API-Modulen ohne Recherche-Ergebnis: Absichern mit .get() und sinnvollem Fallback für JEDEN Feldzugriff.
+
 NOCHMAL: Nur reiner Python-Code. Kein Markdown. Keine Backticks. Keine Kommentare außerhalb des Codes."""
 
 # ─────────────────────────────────────────────
@@ -440,6 +476,10 @@ class Orchestrator:
     # ─────────────────────────────────────────
     async def run_agent_code(self, code: str) -> tuple[str, str]:
         """Führt Recherche-Code in Subprocess aus. Gibt (stdout, stderr) zurück."""
+        # load_dotenv() immer voranstellen damit .env Variablen verfügbar sind
+        dotenv_header = "from dotenv import load_dotenv; load_dotenv()\n"
+        if "load_dotenv" not in code:
+            code = dotenv_header + code
         try:
             result = await asyncio.get_event_loop().run_in_executor(
                 None,
@@ -473,6 +513,45 @@ class Orchestrator:
         return True, "OK"
 
     # ─────────────────────────────────────────
+    # LOGIK-REVIEW (Builder-Mode)
+    # Zweiter LLM-Pass der Halluzinationen und Logik-Fehler prüft
+    # ─────────────────────────────────────────
+    async def review_module_code(self, code: str, task: str) -> tuple[bool, str]:
+        """
+        Prüft generierten Code auf Logik-Fehler, halluzinierte API-Felder
+        und kaputte Dedup-Logik. Gibt (ok, feedback) zurück.
+        """
+        review_prompt = (
+            f"Aufgabe war: {task}\n\n"
+            f"Generierter Code:\n{code[:3000]}\n\n"
+            f"WICHTIGE KONTEXT-REGELN (nicht als Fehler melden!):\n"
+            f"- OWM data/2.5/weather ist korrekt und gewollt. Warnungen werden aus Wettercodes abgeleitet — kein Fehler!\n"
+            f"- data/3.0/onecall und data/2.5/onecall sind GESPERRT — falls verwendet: Fehler melden.\n"
+            f"- chat_id muss über os.getenv('CHAT_ID') geladen werden — TELEGRAM_CHAT_ID ist falsch.\n"
+            f"- Dedup über zusammengesetzte Keys aus echten Feldern (z.B. id_main_description) ist korrekt.\n\n"
+            f"Prüfe NUR folgende echte Probleme:\n"
+            f"1. Kommt der String '3.0/onecall' oder '2.5/onecall' irgendwo im Code vor? Auch als zweiter Call nach einem ersten erfolgreichen Call — IMMER gesperrt, IMMER Fehler melden!\n"
+            f"2. Wird TELEGRAM_CHAT_ID statt CHAT_ID verwendet?\n"
+            f"3. Werden Daten nur im RAM gehalten statt in memory/ als JSON persistiert?\n"
+            f"4. Fehlt setup(app) oder sind Commands falsch registriert?\n"
+            f"5. Werden API-Felder verwendet die nicht im Recherche-Ergebnis vorkamen?\n\n"
+            f"Antworte NUR mit diesem JSON (kein Markdown, keine Backticks):\n"
+            f"{{\"ok\": true/false, \"issues\": [\"Problem 1\", \"Problem 2\"]}}\n"
+            f"ok=true wenn keine Probleme gefunden. ok=false + issues wenn Probleme vorhanden."
+        )
+        try:
+            result = await self.llm_call([{"role": "user", "content": review_prompt}], use_json=True)
+            if isinstance(result, dict):
+                ok = result.get("ok", True)
+                issues = result.get("issues", [])
+                if not ok and issues:
+                    return False, " | ".join(issues)
+            return True, "OK"
+        except Exception as e:
+            logger.warning(f"Review-Pass fehlgeschlagen (ignoriert): {e}")
+            return True, "OK"  # Bei Fehler im Review: nicht blockieren
+
+    # ─────────────────────────────────────────
     # HAUPTMETHODE
     # ─────────────────────────────────────────
     async def execute_mission(self, task: str):
@@ -496,12 +575,22 @@ class Orchestrator:
             research_messages = [
                 {"role": "system", "content": AGENT_SYSTEM},
                 {"role": "user",   "content": (
+                    f"PFLICHT: Erste Zeilen im Code müssen immer sein:\n"
+                    f"from dotenv import load_dotenv; load_dotenv()\n"
+                    f"Damit sind alle .env Variablen verfügbar.\n\n"
                     f"Recherchiere für folgende Aufgabe:\n{task}\n\n"
                     f"Finde heraus:\n"
                     f"- Welche öffentliche API/URL kann genutzt werden?\n"
                     f"- Wie sieht ein konkreter API-Call aus?\n"
                     f"- Welche Parameter/Keys sind nötig?\n"
+                    f"PFLICHT BEI API-CALLS:\n"
+                    f"- Prüfe den HTTP-Statuscode: nur 200 = funktioniert. Bei 401/403/404: anderen Endpoint suchen!\n"
+                    f"- Gib den Statuscode immer mit print() aus damit er sichtbar ist.\n"
+                    f"- Wenn ein Endpoint 401/403 zurückgibt: sofort Fallback auf kostenlosen Endpoint testen.\n"
+                    f"- Nur einen Endpoint als RESULT ausgeben der tatsächlich 200 zurückgegeben hat.\n"
                     f"Schreibe Python-Code der die API testet und mit print('RESULT:', ...) ausgibt.\n"
+                    f"PFLICHT: Gib die komplette Response-Struktur aus (print die Keys/Felder).\n"
+                    f"Verwende im Modul NUR Felder die tatsächlich im Response vorhanden sind — niemals erfinden.\n"
                     f"Nur reiner Python-Code, keine Backticks."
                 )}
             ]
@@ -562,6 +651,33 @@ class Orchestrator:
                             f"- CommandHandler\n"
                             f"- async def Handler-Funktion\n"
                             f"- .description Metadaten\n"
+                            f"Nur reiner Python-Code, keine Backticks."
+                        )})
+                        continue
+
+                    # Harte Code-Checks (kein LLM nötig, nur generische Regeln)
+                    hard_issues = []
+                    if "TELEGRAM_CHAT_ID" in code:
+                        hard_issues.append("Falscher Key TELEGRAM_CHAT_ID — muss CHAT_ID heißen!")
+                    if hard_issues and attempt < max_attempts:
+                        feedback = " | ".join(hard_issues)
+                        await self.log(f"🚫 Hard-Check Versuch {attempt}: {feedback} — Korrigiere...")
+                        messages.append({"role": "assistant", "content": raw})
+                        messages.append({"role": "user", "content": (
+                            f"KRITISCHE FEHLER:\n{feedback}\n\n"
+                            f"Nur reiner Python-Code, keine Backticks."
+                        )})
+                        continue
+
+                    # Logik-Review (Halluzinations-Check)
+                    review_ok, review_feedback = await self.review_module_code(code, task)
+                    if not review_ok and attempt < max_attempts:
+                        await self.log(f"🔍 Review Versuch {attempt}: {review_feedback} — Korrigiere...")
+                        messages.append({"role": "assistant", "content": raw})
+                        messages.append({"role": "user", "content": (
+                            f"Der Code hat folgende Logik-Probleme:\n{review_feedback}\n\n"
+                            f"Bitte korrigiere. Nur Felder verwenden die sicher existieren, "
+                            f"Dedup über zusammengesetzte Keys (nie halluziniertes \'id\'-Feld).\n"
                             f"Nur reiner Python-Code, keine Backticks."
                         )})
                         continue

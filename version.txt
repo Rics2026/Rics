@@ -4,3 +4,6 @@ modules/discord_ki_server.py
 modules/moltbook.py
 modules/web_app.py
 modules/orchestrator.py
+modules/solar.py
+modules/proactive_brain.py
+modules/web_app.py

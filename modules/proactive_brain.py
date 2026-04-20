@@ -532,7 +532,23 @@ async def _check_vision_memory(brain: Brain, name: str, now_str: str) -> str | N
 # NOAH 2000 SOC-WATCHER
 # ══════════════════════════════════════════════════════════
 
-LAST_NOAH_WARN = {"voll": 0, "leer": 0}
+_NOAH_WARN_FILE = os.path.join(os.path.dirname(__file__), "..", "memory", "noah_warn_state.json")
+
+def _load_noah_warn() -> dict:
+    try:
+        with open(_NOAH_WARN_FILE) as f:
+            return json.load(f)
+    except Exception:
+        return {"voll": 0, "leer": 0}
+
+def _save_noah_warn() -> None:
+    try:
+        with open(_NOAH_WARN_FILE, "w") as f:
+            json.dump(LAST_NOAH_WARN, f)
+    except Exception as e:
+        print(f"[Noah] Warn-State speichern fehlgeschlagen: {e}")
+
+LAST_NOAH_WARN: dict = _load_noah_warn()
 
 async def _check_noah_soc(brain: Brain) -> tuple[str | None, str | None]:
     """
@@ -556,6 +572,7 @@ async def _check_noah_soc(brain: Brain) -> tuple[str | None, str | None]:
 
         if soc >= soc_voll and (now_ts - LAST_NOAH_WARN["voll"]) > cooldown:
             LAST_NOAH_WARN["voll"] = now_ts
+            _save_noah_warn()
             ppv = d.get("ppv", 0)
             pac = d.get("pac", 0)
             msg = (
@@ -566,6 +583,7 @@ async def _check_noah_soc(brain: Brain) -> tuple[str | None, str | None]:
 
         if soc <= soc_leer and (now_ts - LAST_NOAH_WARN["leer"]) > cooldown:
             LAST_NOAH_WARN["leer"] = now_ts
+            _save_noah_warn()
             msg = (
                 f"⚠️ *Noah 2000 fast leer!* ({soc:.0f}%)\n"
                 f"Entlädt gerade mit `{d.get('discharge', 0):.0f}` W."

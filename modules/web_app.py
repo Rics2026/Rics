@@ -396,6 +396,18 @@ body::before{content:'';position:fixed;inset:0;background:radial-gradient(ellips
 .add-action-btn:hover{background:rgba(0,255,136,.22)}
 .actions-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:1rem;margin-bottom:1rem}
 
+/* Befehle-Seite */
+.cmd-cat-title{font-size:.7rem;color:var(--c);font-weight:700;text-transform:uppercase;letter-spacing:1px;margin:0 0 .8rem;padding-bottom:.5rem;border-bottom:1px solid var(--border)}
+.cmd-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:.7rem;margin-bottom:1.5rem}
+.cmd-card{padding:.75rem 1rem;background:var(--bg3);border:1px solid var(--border);border-radius:10px;cursor:pointer;transition:all .2s;display:flex;flex-direction:column;gap:.25rem}
+.cmd-card:hover{background:rgba(0,212,255,.13);border-color:var(--c);transform:translateY(-2px)}
+.cmd-card:active{transform:translateY(0)}
+.cmd-card .cmd-name{font-size:.82rem;font-weight:700;color:var(--c);font-family:'Courier New',monospace}
+.cmd-card .cmd-desc{font-size:.72rem;color:var(--sub);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.cmd-search{width:100%;padding:.75rem 1rem;background:var(--bg3);border:1.5px solid var(--border);color:var(--c);border-radius:10px;font-family:'Courier New',monospace;font-size:.9rem;transition:border-color .2s;margin-bottom:1.2rem}
+.cmd-search:focus{outline:none;border-color:var(--c)}
+.cmd-search::placeholder{color:var(--sub)}
+
 /* Mobile */
 @media(max-width:768px){
   .header{padding:.75rem 1rem}
@@ -414,7 +426,6 @@ body::before{content:'';position:fixed;inset:0;background:radial-gradient(ellips
   .action-card{grid-template-columns:1fr}
   .ki-textarea{min-height:240px}
   .qbtn{padding:.65rem .8rem;font-size:.72rem;white-space:nowrap}
-  .quick-btns::-webkit-scrollbar{display:none}
 }
 </style>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
@@ -441,6 +452,7 @@ body::before{content:'';position:fixed;inset:0;background:radial-gradient(ellips
 <div class="tabs">
   <button class="tab active" onclick="switchTab(event,'dash')">Dashboard</button>
   <button class="tab" onclick="switchTab(event,'chat')">Chat</button>
+  <button class="tab" onclick="switchTab(event,'befehle');loadCommandsPage()">Befehle</button>
   <button class="tab" onclick="switchTab(event,'sett')">Settings</button>
   <button class="tab" onclick="switchTab(event,'kiconf');loadKiConfig()">KI-Config</button>
 </div>
@@ -502,13 +514,20 @@ body::before{content:'';position:fixed;inset:0;background:radial-gradient(ellips
           <div class="msg-text">Hallo! Ich bin __BOT_NAME__, dein KI-Assistent. Alle Gedächtnisse und Module sind aktiv. Was kann ich für dich tun?</div>
         </div>
       </div>
-      <div id="quick-btns-container" class="quick-btns" style="display:flex;gap:.5rem;margin-top:.6rem;overflow-x:auto;flex-shrink:0;padding-bottom:.2rem">
-        <span style="color:var(--sub);font-size:.75rem;padding:.5rem">Lade Befehle…</span>
-      </div>
       <div class="input-row" style="margin-top:.5rem">
         <input class="msg-input" id="msg-input" type="text" placeholder="Nachricht oder /befehl (Enter zum Senden)" autocomplete="off">
         <button class="send-btn" id="send-btn" onclick="sendMsg()">SENDEN</button>
       </div>
+    </div>
+  </div>
+
+  <!-- BEFEHLE -->
+  <div id="befehle" class="content">
+    <div class="card">
+      <div class="card-title">⚡ Befehlszentrale</div>
+      <input class="cmd-search" id="cmd-search" type="text" placeholder="Befehl suchen…" oninput="filterCmds(this.value)" autocomplete="off">
+      <div id="befehle-loading" style="color:var(--sub);font-size:.85rem">Lade Befehle…</div>
+      <div id="befehle-body"></div>
     </div>
   </div>
 
@@ -731,30 +750,116 @@ var CMD_ICONS = {
   look:'🔍', timer_start:'⏱️', ls:'📁', backup:'💾',
   model:'🤖', voice:'🎤', status:'📡', updater:'🔧', update:'🔧',
 };
+
+// Gecachte API-Daten für Befehle-Seite
+var _cmdsCache = null;
+
 function loadDynamicCmds() {
+  // Vorab-Cache befüllen damit Befehle-Seite sofort rendert
   fetch('/api/commands', {credentials:'same-origin'})
     .then(function(r){ return r.json(); })
-    .then(function(d) {
-      var container = document.getElementById('quick-btns-container');
-      if (!container) return;
-      container.innerHTML = '';
-      (d.commands || []).forEach(function(cmd) {
-        var icon = CMD_ICONS[cmd] || '⚡';
-        var btn = document.createElement('button');
-        btn.className = 'qbtn';
-        btn.style.flexShrink = '0';
-        btn.textContent = icon + ' /' + cmd;
-        btn.onclick = function(){ sendQuick('/' + cmd); };
-        container.appendChild(btn);
+    .then(function(d){ _cmdsCache = d; })
+    .catch(function(){});
+}
+
+// ── Befehle-Seite rendern ─────────────────────────────────────
+var _cmdsPageLoaded = false;
+
+function loadCommandsPage() {
+  if (_cmdsPageLoaded && _cmdsCache) { return; }
+  var loading = document.getElementById('befehle-loading');
+  var body    = document.getElementById('befehle-body');
+  if (!body) return;
+
+  function render(data) {
+    _cmdsCache = data;
+    _cmdsPageLoaded = true;
+    if (loading) loading.style.display = 'none';
+    body.innerHTML = '';
+    var cats = data.categories || {};
+    if (Object.keys(cats).length === 0) {
+      body.innerHTML = '<div style="color:var(--sub);font-size:.85rem">Keine Befehle gefunden.</div>';
+      return;
+    }
+    Object.keys(cats).forEach(function(grp) {
+      var cmds = cats[grp];
+      if (!cmds || cmds.length === 0) return;
+      var section = document.createElement('div');
+      section.className = 'cmd-cat-section';
+      section.setAttribute('data-group', grp);
+
+      var title = document.createElement('div');
+      title.className = 'cmd-cat-title';
+      title.textContent = grp;
+      section.appendChild(title);
+
+      var grid = document.createElement('div');
+      grid.className = 'cmd-grid';
+      cmds.forEach(function(item) {
+        var card = document.createElement('div');
+        card.className = 'cmd-card';
+        card.setAttribute('data-cmd', item.cmd);
+        card.setAttribute('data-desc', (item.desc || '').toLowerCase());
+        card.innerHTML =
+          '<div class="cmd-name">' + (item.icon || '⚡') + ' /' + item.cmd + '</div>' +
+          '<div class="cmd-desc">' + (item.desc || '—') + '</div>';
+        card.onclick = function() { sendQuickAndFocus('/' + item.cmd); };
+        grid.appendChild(card);
       });
-      if (!d.commands || d.commands.length === 0) {
-        container.innerHTML = '<span style="color:var(--sub);font-size:.75rem;padding:.5rem">Keine Befehle gefunden</span>';
-      }
-    })
-    .catch(function() {
-      var c = document.getElementById('quick-btns-container');
-      if (c) c.innerHTML = '';
+      section.appendChild(grid);
+      body.appendChild(section);
     });
+  }
+
+  if (_cmdsCache) {
+    render(_cmdsCache);
+    return;
+  }
+  fetch('/api/commands', {credentials:'same-origin'})
+    .then(function(r){ return r.json(); })
+    .then(render)
+    .catch(function(e) {
+      if (loading) loading.textContent = '⚠️ Fehler: ' + e.message;
+    });
+}
+
+// ── Befehl anklicken → Chat-Tab, scroll, input befüllen ──────
+function sendQuickAndFocus(cmd) {
+  // Auf Chat-Tab wechseln
+  document.querySelectorAll('.content').forEach(function(c){ c.classList.remove('show'); });
+  document.querySelectorAll('.tab').forEach(function(t){ t.classList.remove('active'); });
+  document.getElementById('chat').classList.add('show');
+  // Tab-Button: 2. Tab (Index 1 = Chat)
+  var tabs = document.querySelectorAll('.tab');
+  if (tabs[1]) tabs[1].classList.add('active');
+  // Input befüllen
+  var inp = document.getElementById('msg-input');
+  if (inp) {
+    inp.value = cmd;
+    inp.focus();
+    inp.setSelectionRange(cmd.length, cmd.length);
+  }
+  // Chatbox ans Ende scrollen
+  var box = document.getElementById('chatbox');
+  if (box) { box.scrollTop = box.scrollHeight; }
+  // Direkt absenden
+  setTimeout(sendMsg, 80);
+}
+
+// ── Live-Suche auf Befehle-Seite ─────────────────────────────
+function filterCmds(q) {
+  q = q.toLowerCase().trim();
+  document.querySelectorAll('.cmd-cat-section').forEach(function(sec) {
+    var visible = 0;
+    sec.querySelectorAll('.cmd-card').forEach(function(card) {
+      var cmd  = card.getAttribute('data-cmd') || '';
+      var desc = card.getAttribute('data-desc') || '';
+      var show = !q || cmd.indexOf(q) !== -1 || desc.indexOf(q) !== -1;
+      card.style.display = show ? '' : 'none';
+      if (show) visible++;
+    });
+    sec.style.display = visible ? '' : 'none';
+  });
 }
 
 // ── Action-Confirm UI ────────────────────────────────────────
@@ -1694,17 +1799,63 @@ def deepseek_balance():
 
 @app.route("/api/commands")
 def api_commands():
-    """Gibt alle registrierten Telegram-Command-Namen zurück (für Quick-Buttons)."""
+    """Gibt alle registrierten Telegram-Commands zurück — flach + kategorisiert."""
     if not session.get("auth"):
         return jsonify({"error": "unauthorized"}), 401
-    cmds = []
+
+    # Kategorie-Mapping aus help.py (dupliziert damit kein Import nötig)
+    CATEGORY_GROUPS = {
+        "🧠 KI & Agenten":     ["KI", "Persönlichkeit", "Kategorie"],
+        "🧩 Gedächtnis":       ["Gedächtnis"],
+        "📅 Planung & Jobs":   ["Agenda", "Briefing", "Jobs"],
+        "👁 Vision & Medien":  ["Vision", "Content"],
+        "🌐 Info & Recherche": ["Monitor", "Wetter", "Energie", "Autonom", "Recherche"],
+        "📱 Social & Discord": ["Social", "Discord"],
+        "💰 Finance":          ["Finance"],
+        "💻 System & LLM":     ["System", "LLM"],
+        "❓ Sonstiges":        [],
+    }
+    raw_to_group = {}
+    for grp, raws in CATEGORY_GROUPS.items():
+        for r in raws:
+            raw_to_group[r] = grp
+
+    CMD_ICONS_PY = {
+        "wetter":"🌤","dashboard":"📊","briefing":"📋","agenda":"📅",
+        "memory_view":"🧠","hilfe":"❓","solar":"☀️","jobs":"📝",
+        "reset":"🔄","ichnbin":"👤","merke":"📝","vergiss":"🗑️",
+        "discord":"💬","youtube":"▶️","web":"🌐","benzin":"⛽",
+        "look":"🔍","timer_start":"⏱️","ls":"📁","backup":"💾",
+        "model":"🤖","voice":"🎤","status":"📡","updater":"🔧","update":"🔧",
+        "reflexion":"💭","discord_ki_stats":"📊","cron_add":"⏰","cron_list":"📋",
+        "cron_del":"🗑️","editiere":"✏️","models":"🤖","wecker":"⏰",
+        "timer_stop":"⏹️","timer_list":"📋","paypal":"💳","paypal_pause":"⏸️",
+    }
+
+    cats = {g: [] for g in CATEGORY_GROUPS}
+    flat = []
+
     if _telegram_app:
-        for group in _telegram_app.handlers.values():
-            for h in group:
-                if hasattr(h, "commands"):
-                    for c in h.commands:
-                        cmds.append(c)
-    return jsonify({"commands": sorted(set(cmds))})
+        for handler_group in _telegram_app.handlers.values():
+            for h in handler_group:
+                if not hasattr(h, "commands"):
+                    continue
+                cmd  = sorted(h.commands)[0]
+                desc = getattr(h.callback, "description", "")
+                raw  = getattr(h.callback, "category",    "Sonstiges")
+                grp  = raw_to_group.get(raw, "❓ Sonstiges")
+                icon = CMD_ICONS_PY.get(cmd, "⚡")
+                entry = {"cmd": cmd, "desc": desc, "icon": icon}
+                cats.setdefault(grp, []).append(entry)
+                flat.append(cmd)
+
+    # Kategorien sortieren, leere rausfiltern
+    cats_clean = {
+        g: sorted(v, key=lambda x: x["cmd"])
+        for g, v in cats.items() if v
+    }
+
+    return jsonify({"commands": sorted(set(flat)), "categories": cats_clean})
 
 
 def _detect_action_web(answer: str) -> dict | None:

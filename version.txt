@@ -1,11 +1,4 @@
 Version 2.0
 
+modules/web_app.py
 modules/discord_ki_server.py
-modules/discord_manager.py
-modules/moltbook.py
-modules/web_app.py
-modules/orchestrator.py
-bot.py
-modules/solar.py
-modules/proactive_brain.py
-modules/web_app.py

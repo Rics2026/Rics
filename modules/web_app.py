@@ -184,7 +184,7 @@ ENV_GROUPS = {
 
     # ── externe APIs ───────────────────────────────────────────────────
     "🌐 APIs":          [("WETTER_TOKEN","password"),("YOUTUBE_API_KEY","password"),("MOLTBOOK_API_KEY","password"),
-                         ("ECOTRACKER_IP","text"),("TANKERKOENIG_API_KEY","password"),("FLUX_API_TOKEN","password")],
+                         ("MOLTBOOK_USERNAME","text"),("ECOTRACKER_IP","text"),("TANKERKOENIG_API_KEY","password"),("FLUX_API_TOKEN","password")],
 
     # ── Energie / Growatt Noah 2000 ─────────────────────────────────────
     "🔋 Energie":       [("GROWATT_USER","text"),("GROWATT_PASS","password"),("GROWATT_NOAH_SN","text"),
@@ -729,7 +729,7 @@ var CMD_ICONS = {
   reset:'🔄', ichnbin:'👤', merke:'📝', vergiss:'🗑️',
   discord:'💬', youtube:'▶️', web:'🌐', benzin:'⛽',
   look:'🔍', timer_start:'⏱️', ls:'📁', backup:'💾',
-  model:'🤖', voice:'🎤', status:'📡', updater:'🔧',
+  model:'🤖', voice:'🎤', status:'📡', updater:'🔧', update:'🔧',
 };
 function loadDynamicCmds() {
   fetch('/api/commands', {credentials:'same-origin'})
@@ -1004,6 +1004,19 @@ function sendMsg(cmd) {
                 document.getElementById(botId + '-text').textContent = accumulated;
                 var box = document.getElementById('chatbox');
                 box.scrollTop = box.scrollHeight;
+              }
+              // edit_text-Ersatz: letzte Bot-Nachricht überschreiben
+              if (j.replace_last !== undefined) {
+                accumulated = j.replace_last;
+                if (!msgEl) {
+                  var box2 = document.getElementById('chatbox');
+                  var old2 = document.getElementById(botId);
+                  if (old2) old2.remove();
+                  msgEl = appendMsg('bot', '', botId);
+                }
+                document.getElementById(botId + '-text').textContent = accumulated;
+                var box2 = document.getElementById('chatbox');
+                box2.scrollTop = box2.scrollHeight;
               }
               if (j.action_pending) {
                 showActionConfirm(j.action_pending);
@@ -1872,44 +1885,38 @@ def chat():
 
         if handler_cb:
             def _cmd_stream(_cb=handler_cb, _app=tg_app, _args=args, _cmd=cmd):
-                collected = []
-                keyboard_rows = []  # InlineKeyboard-Buttons für Web
+                import queue as _cmd_q
+                result_q   = _cmd_q.Queue()
+                keyboard_rows = []
 
                 def _extract_keyboard(kw):
                     markup = kw.get("reply_markup")
                     if markup and hasattr(markup, "inline_keyboard"):
                         for row in markup.inline_keyboard:
-                            r = []
-                            for btn in row:
-                                r.append({
-                                    "text": btn.text,
-                                    "data": getattr(btn, "callback_data", None),
-                                    "url":  getattr(btn, "url", None),
-                                })
-                            keyboard_rows.append(r)
+                            keyboard_rows.append([{
+                                "text": btn.text,
+                                "data": getattr(btn, "callback_data", None),
+                                "url":  getattr(btn, "url", None),
+                            } for btn in row])
 
                 class FakeMessageSent:
-                    """Returned by reply_text — supports edit_text (in-place replace)."""
+                    """Returned by reply_text — edit_text ersetzt letzte Nachricht live."""
                     async def edit_text(self, text, **kw):
-                        # Letzte Nachricht ersetzen (simuliert Telegram edit_message_text)
-                        if collected:
-                            collected[-1] = str(text)
-                        else:
-                            collected.append(str(text))
                         _extract_keyboard(kw)
+                        result_q.put(("replace", str(text)))
                     async def delete(self): pass
 
                 class FakeMessage:
                     text = msg
                     message_id = 0
                     async def reply_text(self, text, **kw):
-                        collected.append(str(text))
                         _extract_keyboard(kw)
+                        result_q.put(("append", str(text)))
                         return FakeMessageSent()
                     async def reply_chat_action(self, action, **kw):
                         pass
                     async def reply_photo(self, photo, caption=None, **kw):
-                        if caption: collected.append(str(caption))
+                        if caption: result_q.put(("append", str(caption)))
                     async def reply_voice(self, voice, **kw):
                         pass
 
@@ -1924,26 +1931,47 @@ def chat():
                     args        = _args
                     application = _app
                     bot         = _app.bot
-                    bot_data    = _app.bot_data     # real: enthält jarvis, brain, etc.
-                    user_data   = _web_user_data    # modul-global (persistiert)
-                    chat_data   = _web_chat_data    # modul-global (persistiert)
+                    bot_data    = _app.bot_data
+                    user_data   = _web_user_data
+                    chat_data   = _web_chat_data
 
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                _in_web_handler.active = True
-                try:
-                    loop.run_until_complete(_cb(FakeUpdate(), FakeContext()))
-                except Exception as e:
-                    collected.append(f"❌ Fehler bei /{_cmd}: {e}")
-                finally:
-                    _in_web_handler.active = False
-                    loop.close()
+                def _run():
+                    _loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(_loop)
+                    _in_web_handler.active = True
+                    try:
+                        _loop.run_until_complete(_cb(FakeUpdate(), FakeContext()))
+                    except Exception as e:
+                        result_q.put(("append", f"❌ Fehler bei /{_cmd}: {e}"))
+                    finally:
+                        _in_web_handler.active = False
+                        _loop.close()
+                        result_q.put(("done", None))
 
-                result = "\n".join(collected) if collected else f"✅ /{_cmd} ausgeführt."
-                yield "data: " + json.dumps({"t": result}) + "\n\n"
-                if keyboard_rows:
-                    yield "data: " + json.dumps({"buttons": keyboard_rows}) + "\n\n"
-                yield "data: " + json.dumps({"done": True}) + "\n\n"
+                threading.Thread(target=_run, daemon=True).start()
+
+                has_output = False
+                while True:
+                    try:
+                        kind, text = result_q.get(timeout=0.4)
+                    except _cmd_q.Empty:
+                        # Keepalive — hält SSE-Verbindung offen während langer Ops
+                        yield "data: " + json.dumps({"ping": True}) + "\n\n"
+                        continue
+
+                    if kind == "done":
+                        if keyboard_rows:
+                            yield "data: " + json.dumps({"buttons": keyboard_rows}) + "\n\n"
+                        if not has_output:
+                            yield "data: " + json.dumps({"t": f"✅ /{_cmd} ausgeführt."}) + "\n\n"
+                        yield "data: " + json.dumps({"done": True}) + "\n\n"
+                        break
+                    elif kind == "append":
+                        has_output = True
+                        yield "data: " + json.dumps({"t": text}) + "\n\n"
+                    elif kind == "replace":
+                        has_output = True
+                        yield "data: " + json.dumps({"replace_last": text}) + "\n\n"
 
             return Response(_cmd_stream(), mimetype="text/event-stream",
                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})

@@ -1,6 +1,6 @@
-Update 2.1
+Update 2.2
 
-- web_app.py Bugfix
+- web_app.py Neue seite Hinzugefügt für Kurzbefehle
 
 
 

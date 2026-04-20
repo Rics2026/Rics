@@ -4,6 +4,8 @@ Update 2.0
 - Moltbook.py Log fehler behoben
 - web_app.py Bugfix
 - orchestrator.py Bugfix
+- solar.py intergrationt Growatt Noah 2000
+- web_app.py Settings Energie Fenster eingefügt
 
 
 

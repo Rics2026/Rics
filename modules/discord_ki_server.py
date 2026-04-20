@@ -638,6 +638,32 @@ async def _manual_heartbeat() -> dict:
     return await tg_loop.run_in_executor(None, lambda: future.result(timeout=120))
 
 
+async def send_to_ki_server(channel_name: str, message: str) -> dict:
+    """
+    Öffentliche Schnittstelle für bot.py → DISCORD_KI_MESSAGE Action.
+    Sendet in einen Kanal des festen KI-Servers. Erstellt Kanal falls nötig.
+    """
+    bot, loop = _get_shared_loop_and_bot()
+    if not bot or not loop:
+        return {"ok": False, "error": "discord_manager nicht verfügbar"}
+    guild = discord.utils.get(bot.guilds, id=ALLOWED_GUILD_ID)
+    if not guild:
+        return {"ok": False, "error": f"KI-Server {ALLOWED_GUILD_ID} nicht verbunden"}
+
+    async def _do_send():
+        ch = await _ensure_channel(guild, channel_name)
+        if not ch:
+            return {"ok": False, "error": f"Kanal #{channel_name} nicht erstellbar"}
+        await ch.send(message)
+        _write_log({"event": "ki_send", "kanal": f"#{channel_name}", "nachricht": message})
+        _memory_add(f"DISCORD_KI_SEND [{datetime.now().strftime('%d.%m.%Y %H:%M')}] #{channel_name}: {message}")
+        return {"ok": True, "kanal": channel_name}
+
+    future = asyncio.run_coroutine_threadsafe(_do_send(), loop)
+    tg_loop = asyncio.get_running_loop()
+    return await tg_loop.run_in_executor(None, lambda: future.result(timeout=30))
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # OAUTH2-LINK
 # ══════════════════════════════════════════════════════════════════════════════

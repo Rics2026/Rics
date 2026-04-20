@@ -1,9 +1,5 @@
 Update 2.1
 
-- discord_ki_server.py Fix das mehrfach auf post geantwortet wird.
-                       Erstellen von Kategorien und ordnen von Kanälen
-                       /discord_ki_heartbeat wie Cron alle 4 Beats 1 Post.
-                       senden von Nachichte aus Chatkontext zu Discord
 - web_app.py Bugfix
 
 

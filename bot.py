@@ -985,6 +985,38 @@ Nur JSON:"""
         if dc:
             discord_section = f"\n{dc}"
 
+        # 5b. Energie-Live-Daten (EcoTracker + Noah 2000)
+        energie_section = ""
+        _energie_keywords = ["strom", "solar", "noah", "speicher", "einspeisung", "netzbezug",
+                              "watt", "kwh", "soc", "ladestand", "laden", "entladen", "ecotracker"]
+        if any(kw in user_text.lower() for kw in _energie_keywords):
+            _energie_parts = []
+            try:
+                from modules.solar import get_live_power_raw, _fetch_noah
+                _eco = await get_live_power_raw()
+                if _eco:
+                    _p = _eco["power"]
+                    _richtung = f"Einspeisung {abs(_p):.0f}W" if _p < 0 else f"Netzbezug {_p:.0f}W"
+                    _energie_parts.append(
+                        f"EcoTracker (Stromzähler): {_richtung} | "
+                        f"Import gesamt {_eco['in']:.2f} kWh | Export gesamt {_eco['out']:.2f} kWh"
+                    )
+                _noah = _fetch_noah()
+                if _noah:
+                    _energie_parts.append(
+                        f"Noah 2000 (Batteriespeicher): {_noah['status']} | "
+                        f"SOC {_noah['soc']:.0f}% | "
+                        f"Solar {_noah['ppv']:.0f}W | "
+                        f"Einspeisung ins Netz {_noah['pac']:.0f}W | "
+                        f"Lädt {_noah['charge']:.0f}W | Entlädt {_noah['discharge']:.0f}W | "
+                        f"Heute {_noah['today']:.2f} kWh | Gesamt {_noah['total']:.2f} kWh | "
+                        f"Modus {_noah['mode']}"
+                    )
+            except Exception as _e:
+                print(f"[chat] Energie-Kontext Fehler: {_e}")
+            if _energie_parts:
+                energie_section = "\n### LIVE-ENERGIE:\n" + "\n".join(_energie_parts)
+
         # 6. System Message
         now_str        = self.brain.get_now().strftime("%d.%m.%Y %H:%M") if self.brain else datetime.now().strftime("%d.%m.%Y %H:%M")
         brain_section  = f"\n### BRAIN:\n{brain_data}"        if brain_data and brain_data != "KEINE DATEN" else ""
@@ -995,7 +1027,7 @@ Nur JSON:"""
 ━━━ AKTUELLE ZEIT: {now_str} ━━━
 (Diese Zeit ist verbindlich — verwende sie für alle zeitbezogenen Aussagen.)
 
-{personal_text}{brain_section}{memory_section}{brain_file_section}{discord_section}"""
+{personal_text}{brain_section}{memory_section}{brain_file_section}{discord_section}{energie_section}"""
 
         msgs = (
             [{"role": "system", "content": system_msg}]

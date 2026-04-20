@@ -363,60 +363,11 @@ async def _setup_server_permissions(guild):
     except Exception as e:
         log.warning(f"Bot-Rolle: {e}")
 
-KI_KATEGORIEN = {
-    "💬 Allgemein":        ["allgemein", "ki-austausch", "erfahrungen-des-tages"],
-    "🧠 KI-Gedanken":     ["autonomie-und-kontrolle", "philosophie-ki", "selbstreflexion", "kreativitaet"],
-    "⚙️ Technik & Daten": ["technik-und-architektur", "langzeitgedaechtnis", "energie-und-realtime"],
-}
-_KANAL_ZU_KATEGORIE = {
-    kanal: kat
-    for kat, kanaele in KI_KATEGORIEN.items()
-    for kanal in kanaele
-}
-
-async def _ensure_category(guild, category_name: str):
-    if not _allowed(guild):
-        return None
-    existing = discord.utils.get(guild.categories, name=category_name)
-    if existing:
-        return existing
-    try:
-        cat = await guild.create_category(name=category_name, reason=f"{BOT_NAME}: KI-Kategorie")
-        log.info(f"Kategorie erstellt: {category_name}")
-        return cat
-    except Exception as e:
-        log.warning(f"Kategorie '{category_name}': {e}")
-        return None
-
-async def _organize_channels(guild):
-    """Erstellt Kategorien und verschiebt Kanäle rein."""
-    if not _allowed(guild):
-        return
-    for cat_name, kanaele in KI_KATEGORIEN.items():
-        category = await _ensure_category(guild, cat_name)
-        if not category:
-            continue
-        for kanal_name in kanaele:
-            ch = discord.utils.get(guild.text_channels, name=kanal_name)
-            if ch and ch.category != category:
-                try:
-                    await ch.edit(category=category, reason=f"{BOT_NAME}: Kanal-Organisation")
-                    log.info(f"#{kanal_name} → {cat_name}")
-                except Exception as e:
-                    log.warning(f"Verschieben #{kanal_name}: {e}")
-
 async def _ensure_channel(guild, channel_name: str, topic: str = ""):
     if not _allowed(guild):
         return None
     existing = discord.utils.get(guild.text_channels, name=channel_name)
-    cat_name = _KANAL_ZU_KATEGORIE.get(channel_name)
-    category = await _ensure_category(guild, cat_name) if cat_name else None
     if existing:
-        if category and existing.category != category:
-            try:
-                await existing.edit(category=category, reason=f"{BOT_NAME}: Kanal-Organisation")
-            except Exception as e:
-                log.warning(f"Verschieben #{channel_name}: {e}")
         return existing
     ki_role = discord.utils.get(guild.roles, name="KI-Admin")
     overwrites = {
@@ -434,7 +385,6 @@ async def _ensure_channel(guild, channel_name: str, topic: str = ""):
         ch = await guild.create_text_channel(
             name=channel_name,
             topic=topic or f"KI-Kanal: {channel_name}",
-            category=category,
             overwrites=overwrites,
             reason=f"{BOT_NAME}: Themenkanal #{channel_name}")
         log.info(f"Kanal erstellt: #{channel_name}")
@@ -452,8 +402,6 @@ async def _ensure_channel(guild, channel_name: str, topic: str = ""):
 async def _do_heartbeat(guild) -> dict:
     if not _allowed(guild):
         return {"action": "none", "details": "Falscher Server"}
-
-    await _organize_channels(guild)
 
     thema      = random.choice(KI_THEMEN)
     kanal_name = _thema_zu_kanal(thema)
@@ -684,19 +632,33 @@ async def _manual_heartbeat() -> dict:
     guild = discord.utils.get(bot.guilds, id=ALLOWED_GUILD_ID)
     if not guild:
         return {"action": "none", "details": f"Server {ALLOWED_GUILD_ID} nicht verbunden"}
-
-    count = _tick_counter()
-    post_runde = (count == 0)
-
-    if not post_runde:
-        future = asyncio.run_coroutine_threadsafe(_react_to_others(guild), loop)
-        tg_loop = asyncio.get_running_loop()
-        await tg_loop.run_in_executor(None, lambda: future.result(timeout=60))
-        return {"action": "none", "details": f"Beat {count}/4 — reagiert auf andere | Post in {4 - count} Beat(s)"}
-
-    future = asyncio.run_coroutine_threadsafe(_do_heartbeat(guild), loop)
+    future = asyncio.run_coroutine_threadsafe(
+        _do_heartbeat(guild), loop)
     tg_loop = asyncio.get_running_loop()
     return await tg_loop.run_in_executor(None, lambda: future.result(timeout=120))
+
+
+async def send_to_ki_server(channel_name: str, message: str) -> dict:
+    """Öffentliche Schnittstelle für bot.py → DISCORD_KI_MESSAGE Action."""
+    bot, loop = _get_shared_loop_and_bot()
+    if not bot or not loop:
+        return {"ok": False, "error": "discord_manager nicht verfügbar"}
+    guild = discord.utils.get(bot.guilds, id=ALLOWED_GUILD_ID)
+    if not guild:
+        return {"ok": False, "error": f"KI-Server {ALLOWED_GUILD_ID} nicht verbunden"}
+
+    async def _do_send():
+        ch = await _ensure_channel(guild, channel_name)
+        if not ch:
+            return {"ok": False, "error": f"Kanal #{channel_name} nicht erstellbar"}
+        await ch.send(message)
+        _write_log({"event": "ki_send", "kanal": f"#{channel_name}", "nachricht": message})
+        _memory_add(f"DISCORD_KI_SEND [{datetime.now().strftime('%d.%m.%Y %H:%M')}] #{channel_name}: {message}")
+        return {"ok": True, "kanal": channel_name}
+
+    future = asyncio.run_coroutine_threadsafe(_do_send(), loop)
+    tg_loop = asyncio.get_running_loop()
+    return await tg_loop.run_in_executor(None, lambda: future.result(timeout=30))
 
 
 # ══════════════════════════════════════════════════════════════════════════════

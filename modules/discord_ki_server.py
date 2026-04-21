@@ -393,11 +393,74 @@ async def _setup_server_permissions(guild):
     except Exception as e:
         log.warning(f"Bot-Rolle: {e}")
 
+KI_CATEGORY_NAME = "KI-Kanäle"
+
+async def _ensure_category(guild):
+    """Holt oder erstellt die KI-Kanäle-Kategorie und sortiert Kanäle darin alphabetisch."""
+    if not _allowed(guild):
+        return None
+    cat = discord.utils.get(guild.categories, name=KI_CATEGORY_NAME)
+    if not cat:
+        try:
+            ki_role = discord.utils.get(guild.roles, name="KI-Admin")
+            overwrites = {
+                guild.default_role: discord.PermissionOverwrite(
+                    view_channel=True, read_message_history=True, send_messages=False),
+                guild.me: discord.PermissionOverwrite(
+                    view_channel=True, read_message_history=True,
+                    send_messages=True, manage_messages=True, manage_channels=True),
+            }
+            if ki_role:
+                overwrites[ki_role] = discord.PermissionOverwrite(
+                    view_channel=True, read_message_history=True,
+                    send_messages=True, manage_messages=True)
+            cat = await guild.create_category(
+                name=KI_CATEGORY_NAME,
+                overwrites=overwrites,
+                reason=f"{BOT_NAME}: KI-Themenkanäle")
+            log.info(f"Kategorie erstellt: {KI_CATEGORY_NAME}")
+            _write_log({"event": "kanal_erstellt", "kanal": f"[Kategorie] {KI_CATEGORY_NAME}"})
+        except Exception as e:
+            log.warning(f"Kategorie erstellen: {e}")
+            return None
+
+    # Bekannte KI-Kanäle in die Kategorie verschieben falls noch draußen
+    ki_channel_names = set(KI_KANAL_NAMEN.values()) | {"allgemein"}
+    channels_in_cat = [ch.name for ch in cat.channels]
+    for ch in guild.text_channels:
+        if ch.name in ki_channel_names and ch.name not in channels_in_cat:
+            try:
+                await ch.edit(category=cat, reason=f"{BOT_NAME}: KI-Kanal → {KI_CATEGORY_NAME}")
+                log.info(f"Kanal verschoben: #{ch.name} → {KI_CATEGORY_NAME}")
+            except Exception as e:
+                log.warning(f"Kanal verschieben #{ch.name}: {e}")
+
+    # Kanäle innerhalb der Kategorie alphabetisch sortieren
+    try:
+        sorted_channels = sorted(cat.channels, key=lambda c: c.name)
+        if [c.name for c in cat.channels] != [c.name for c in sorted_channels]:
+            await guild.edit_channel_positions(
+                *[{"channel": ch, "position": i, "category": cat}
+                  for i, ch in enumerate(sorted_channels)],
+                reason=f"{BOT_NAME}: Alphabetische Sortierung")
+    except Exception as e:
+        log.debug(f"Sortierung: {e}")
+
+    return cat
+
+
 async def _ensure_channel(guild, channel_name: str, topic: str = ""):
     if not _allowed(guild):
         return None
     existing = discord.utils.get(guild.text_channels, name=channel_name)
+    cat = await _ensure_category(guild)
     if existing:
+        # Kanal in Kategorie verschieben falls noch draußen
+        if cat and existing.category != cat:
+            try:
+                await existing.edit(category=cat, reason=f"{BOT_NAME}: KI-Kanal → {KI_CATEGORY_NAME}")
+            except Exception as e:
+                log.warning(f"Kanal verschieben: {e}")
         return existing
     ki_role = discord.utils.get(guild.roles, name="KI-Admin")
     overwrites = {
@@ -414,6 +477,7 @@ async def _ensure_channel(guild, channel_name: str, topic: str = ""):
     try:
         ch = await guild.create_text_channel(
             name=channel_name,
+            category=cat,
             topic=topic or f"KI-Kanal: {channel_name}",
             overwrites=overwrites,
             reason=f"{BOT_NAME}: Themenkanal #{channel_name}")

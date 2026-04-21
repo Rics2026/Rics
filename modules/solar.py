@@ -108,6 +108,15 @@ def _fetch_noah() -> dict | None:
     try:
         r = _session.post(f"{GROWATT_BASE}/noahDeviceApi/noah/getSystemStatus",
                           data={"deviceSn": sn}, timeout=10)
+        # Growatt liefert bei abgelaufener Session HTML statt JSON (HTTP 200)
+        if r.headers.get("Content-Type", "").startswith("text/html") or r.text.lstrip().startswith("<"):
+            print("[Noah] Session abgelaufen (HTML-Response), erneuere Login...")
+            _session = None
+            if not _login():
+                return None
+            r = _session.post(f"{GROWATT_BASE}/noahDeviceApi/noah/getSystemStatus",
+                              data={"deviceSn": sn}, timeout=10)
+
         try:
             raw = r.json()
         except Exception:
@@ -115,19 +124,10 @@ def _fetch_noah() -> dict | None:
             return None
         obj = raw.get("obj")
 
-        # Session abgelaufen → neu einloggen
+        # Zusätzlicher Fallback falls obj leer
         if not obj:
-            print("[Noah] Session abgelaufen, erneuere Login...")
-            _session = None
-            if not _login():
-                return None
-            r = _session.post(f"{GROWATT_BASE}/noahDeviceApi/noah/getSystemStatus",
-                              data={"deviceSn": sn}, timeout=10)
-            try:
-                obj = r.json().get("obj")
-            except Exception:
-                print(f"[Noah] Kein JSON nach Re-Login – HTTP {r.status_code}, Antwort: {r.text[:300]!r}")
-                return None
+            print("[Noah] Leere Antwort nach Login, gebe auf.")
+            return None
 
         if not obj:
             return None

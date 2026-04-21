@@ -79,7 +79,11 @@ def _login() -> bool:
         s.headers['User-Agent'] = 'ShinePhone/8.1.1 (iPhone; iOS 16.0; Scale/3.00)'
         r = s.post(f"{GROWATT_BASE}/newTwoLoginAPI.do",
                    data={"userName": user, "password": _hash_pw(pw)}, timeout=10)
-        back = r.json().get("back", {})
+        try:
+            back = r.json().get("back", {})
+        except Exception:
+            print(f"[Noah] Login: Kein JSON – HTTP {r.status_code}, Antwort: {r.text[:300]!r}")
+            return False
         if not back.get("success"):
             print(f"[Noah] Login fehlgeschlagen: {back.get('msg', back.get('error', '?'))}")
             return False
@@ -104,7 +108,11 @@ def _fetch_noah() -> dict | None:
     try:
         r = _session.post(f"{GROWATT_BASE}/noahDeviceApi/noah/getSystemStatus",
                           data={"deviceSn": sn}, timeout=10)
-        raw = r.json()
+        try:
+            raw = r.json()
+        except Exception:
+            print(f"[Noah] Kein JSON – HTTP {r.status_code}, Antwort: {r.text[:300]!r}")
+            return None
         obj = raw.get("obj")
 
         # Session abgelaufen → neu einloggen
@@ -113,9 +121,13 @@ def _fetch_noah() -> dict | None:
             _session = None
             if not _login():
                 return None
-            r   = _session.post(f"{GROWATT_BASE}/noahDeviceApi/noah/getSystemStatus",
-                                data={"deviceSn": sn}, timeout=10)
-            obj = r.json().get("obj")
+            r = _session.post(f"{GROWATT_BASE}/noahDeviceApi/noah/getSystemStatus",
+                              data={"deviceSn": sn}, timeout=10)
+            try:
+                obj = r.json().get("obj")
+            except Exception:
+                print(f"[Noah] Kein JSON nach Re-Login – HTTP {r.status_code}, Antwort: {r.text[:300]!r}")
+                return None
 
         if not obj:
             return None

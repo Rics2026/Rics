@@ -1,3 +1,7 @@
 Version 2.5
+core/system_prompt.txt
+modules/proactive_brain.py
+modules/self_reflection.py
+modules/moltbook.py
 modules/discord_ki_server.py
 modules/solar.py

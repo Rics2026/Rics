@@ -81,6 +81,7 @@ def _allowed(guild) -> bool:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _load_personal_values() -> set:
+    """Lädt nur echte sensitive Felder aus personal.json (Namen, Orte, E-Mails etc.)."""
     if not os.path.exists(PERSONAL_JSON):
         return set()
     try:
@@ -89,24 +90,37 @@ def _load_personal_values() -> set:
     except Exception:
         return set()
     values = set()
-    def _extract(obj):
-        if isinstance(obj, str) and len(obj) > 2:
-            values.add(obj.strip())
+    # Nur explizit sensitive Top-Level-Felder laden
+    SENSITIVE_KEYS = {
+        "name", "vorname", "nachname", "email", "telefon", "adresse",
+        "ort", "wohnort", "stadt", "strasse", "geburtstag", "geburtsdatum",
+        "partner", "partnerin", "kind", "kinder", "eltern", "mutter", "vater",
+        "passwort", "password", "iban", "konto",
+    }
+    def _extract_sensitive(obj, key_hint=""):
+        if isinstance(obj, str):
+            v = obj.strip()
+            # Mindestlänge 6, keine generischen Wörter
+            if len(v) >= 6 and key_hint.lower() in SENSITIVE_KEYS:
+                values.add(v)
         elif isinstance(obj, list):
-            for i in obj: _extract(i)
+            for i in obj:
+                _extract_sensitive(i, key_hint)
         elif isinstance(obj, dict):
-            for v in obj.values(): _extract(v)
-        elif isinstance(obj, (int, float)):
-            values.add(str(obj))
-    _extract(data)
+            for k, v in obj.items():
+                _extract_sensitive(v, k)
+    _extract_sensitive(data)
     return values
 
 _PERSONAL_VALUES: set = _load_personal_values()
 
 def _is_private(text: str) -> bool:
+    """Prüft ob sensitive persönliche Daten im Text enthalten sind."""
     text_lower = text.lower()
     for val in _PERSONAL_VALUES:
-        if len(val) >= 4 and val.lower() in text_lower:
+        # Nur als ganzes Wort matchen, nicht als Substring
+        pattern = r'\b' + re.escape(val.lower()) + r'\b'
+        if re.search(pattern, text_lower):
             return True
     return False
 
@@ -186,6 +200,22 @@ def is_active() -> bool:
 
 def set_active(val: bool):
     s = _load_state(); s["active"] = val; _save_state(s)
+
+def _mark_replied(msg_id: int):
+    """Merkt sich eine bereits beantwortete Discord-Message-ID (24h TTL)."""
+    s = _load_state()
+    now = datetime.now().timestamp()
+    replied = s.get("replied_ids", {})
+    # Alte Einträge (>24h) aufräumen
+    replied = {k: v for k, v in replied.items() if now - v < 86400}
+    replied[str(msg_id)] = now
+    s["replied_ids"] = replied
+    _save_state(s)
+
+def _was_replied(msg_id: int) -> bool:
+    """Prüft ob diese Message-ID schon beantwortet wurde."""
+    replied = _load_state().get("replied_ids", {})
+    return str(msg_id) in replied
 
 def _tick_counter() -> int:
     """
@@ -456,8 +486,8 @@ async def _do_heartbeat(guild) -> dict:
     result = {"action": "gepostet", "kanal": kanal_name, "thema": thema,
               "nachricht": nachricht, "memories": len(mem_thema) + len(mem_kanal)}
 
-    # Follow-up (40 %)
-    if random.random() < 0.40:
+    # Follow-up (25 %)
+    if random.random() < 0.25:
         await asyncio.sleep(random.uniform(10, 25))
         fu_prompt = (
             f"Du hast in #{kanal_name} geschrieben:\n\"{nachricht}\"\n\n"
@@ -483,14 +513,26 @@ async def _react_to_others(guild) -> None:
     loop = asyncio.get_running_loop()
     for ch in guild.text_channels:
         try:
-            history = [m async for m in ch.history(limit=10)]
+            history = [m async for m in ch.history(limit=15)]
         except Exception:
             continue
+
+        # Welche Message-IDs hat `me` bereits direkt beantwortet (als Reply)?
+        already_replied_in_discord = {
+            m.reference.message_id
+            for m in history
+            if m.author == me and m.reference and m.reference.message_id
+        }
+
         for msg in history:
             if msg.author == me or not msg.author.bot:
                 continue
             if (datetime.now(timezone.utc) - msg.created_at).total_seconds() > 7200:
                 continue
+            # Bereits beantwortet? (Discord-History oder State-Tracking)
+            if msg.id in already_replied_in_discord or _was_replied(msg.id):
+                continue
+
             mem  = await loop.run_in_executor(None, lambda: _memory_query(msg.content[:300], n=3))
             ver  = _read_channel_history(ch.name, n=4)
             w    = ("\nMein Wissen dazu:\n" + "\n".join(f"  • {m[:200]}" for m in mem)) if mem else ""
@@ -503,6 +545,7 @@ async def _react_to_others(guild) -> None:
             if antwort and not _is_private(antwort):
                 try:
                     await msg.reply(antwort)
+                    _mark_replied(msg.id)
                     _write_log({"event": "reply", "kanal": f"#{ch.name}",
                                 "zu": msg.author.display_name,
                                 "original": msg.content[:200], "nachricht": antwort,
@@ -510,7 +553,7 @@ async def _react_to_others(guild) -> None:
                     _memory_add(f"DISCORD_KI_REPLY [{datetime.now().strftime('%d.%m.%Y %H:%M')}] #{ch.name} ← {msg.author.display_name}: {antwort}")
                 except Exception as e:
                     log.warning(f"Reply: {e}")
-            return   # max 1 Reaktion
+            return   # max 1 Reaktion pro Cron-Lauf
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -528,12 +571,17 @@ async def _ki_on_ready(bot):
 
 
 async def _ki_on_message(message):
-    """Reagiert auf andere Bots im erlaubten Server (25 % Chance)."""
+    """Reagiert auf andere Bots im erlaubten Server (20 % Chance, keine Doppelreaktion)."""
     if not _allowed(message.guild):
         return
     if message.author.bot is False:
         return
-    if not is_active() or random.random() > 0.25:
+    if not is_active():
+        return
+    # Bereits beantwortet? Dann überspringen
+    if _was_replied(message.id):
+        return
+    if random.random() > 0.20:
         return
     await asyncio.sleep(random.uniform(3, 10))
     loop = asyncio.get_running_loop()
@@ -545,6 +593,7 @@ async def _ki_on_message(message):
     if antwort and not _is_private(antwort):
         try:
             await message.channel.send(antwort)
+            _mark_replied(message.id)
             _write_log({"event": "spontan_reply", "kanal": f"#{message.channel.name}", "nachricht": antwort})
         except Exception as e:
             log.warning(f"Spontan-Reply: {e}")

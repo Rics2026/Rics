@@ -452,6 +452,17 @@ async def _do_heartbeat(guild) -> dict:
         kontext.append("Was ich zuletzt in diesem Kanal schrieb:\n" + "\n".join(f"  • {m[:180]}" for m in mem_kanal[:2]))
     if verlauf:
         kontext.append("Heutiger Gesprächsverlauf:\n" + "\n".join(f"  [{i+1}] {t[:180]}" for i, t in enumerate(verlauf)))
+    # Charakter-Fundament: Core-Values und Logbuch einbeziehen
+    try:
+        from modules.core_values import get_core_values_context, get_logbook_context
+        _cv = get_core_values_context(thema, n=2)
+        _lb = get_logbook_context(thema, n=1)
+        if _cv:
+            kontext.append(_cv)
+        if _lb:
+            kontext.append(_lb)
+    except Exception:
+        pass
     kontext_block = ("\n\n" + "\n\n".join(kontext)) if kontext else ""
 
     wissen_hint = ""

@@ -1,5 +1,8 @@
-Update 2.3
-- discord_ki_server.py Bugfix
+Update 2.6
+- Ki Update - Reflection-Logbook,Self-Reflection erkennt, dass eine Interaktion eine tiefe Bedeutung hat
+              wird dieser Eintrag mit einem permanent-Flag versehen.verknüpft alte Erfolge mit neuen Zielen
+- discord_ki_server.py Bugfix sollte nun jeder heartbeat seperat laufen.
+
 
 
 

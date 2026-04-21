@@ -1,4 +1,5 @@
 Version 2.5
+bot.py
 core/system_prompt.txt
 modules/proactive_brain.py
 modules/self_reflection.py

@@ -606,6 +606,48 @@ Nur JSON:"""
             return "__LIST__"
         return ""
 
+    # ────────────────────────────────────────────────────────────
+    # LONG MESSAGE HELPER
+    # ────────────────────────────────────────────────────────────
+    @staticmethod
+    def _split_message(text: str, max_len: int = 4000) -> list[str]:
+        """Teilt langen Text sauber an Zeilenumbrüchen in Telegram-taugliche Chunks."""
+        chunks = []
+        while len(text) > max_len:
+            split_at = text.rfind('\n', 0, max_len)
+            if split_at < max_len // 2:
+                split_at = max_len
+            chunks.append(text[:split_at])
+            text = text[split_at:].lstrip('\n')
+        if text:
+            chunks.append(text)
+        return chunks
+
+    async def _finalize_message(self, context, chat_id: int, msg_id: int, text: str):
+        """Editiert Placeholder mit erstem Chunk; bei Überlänge folgen weitere Nachrichten."""
+        pm = 'Markdown' if '```' in text else None
+        chunks = self._split_message(text)
+        # Ersten Chunk → Placeholder editieren
+        for parse_mode in (pm, None):
+            try:
+                await context.bot.edit_message_text(
+                    chat_id=chat_id, message_id=msg_id,
+                    text=chunks[0], parse_mode=parse_mode
+                )
+                break
+            except Exception:
+                pass
+        # Weitere Chunks → neue Nachrichten
+        for chunk in chunks[1:]:
+            for parse_mode in (pm, None):
+                try:
+                    await context.bot.send_message(
+                        chat_id=chat_id, text=chunk, parse_mode=parse_mode
+                    )
+                    break
+                except Exception:
+                    pass
+
     def log_chat(self, user_text, assistant_text):
         today    = self.get_now().strftime("%Y-%m-%d")
         log_file = os.path.join(LOG_DIR, f"{today}.log")
@@ -1028,20 +1070,16 @@ Nur JSON:"""
             if await self.propose_action(update, answer, context, user_text=user_text):
                 clean = self._strip_action_block(answer)
                 if clean:
-                    try:
-                        await context.bot.edit_message_text(
-                            chat_id=chat_id, message_id=msg_id, text=clean)
-                    except Exception:
-                        try:
-                            await context.bot.delete_message(chat_id=chat_id, message_id=msg_id)
-                        except Exception:
-                            pass
+                    await self._finalize_message(context, chat_id, msg_id, clean)
                 else:
                     try:
                         await context.bot.delete_message(chat_id=chat_id, message_id=msg_id)
                     except Exception:
                         pass
                 return
+
+            # Finale Antwort sicherstellen — bei Überlänge in mehrere Nachrichten aufteilen
+            await self._finalize_message(context, chat_id, msg_id, answer)
 
             self.chat_history.append({"role": "user",      "content": user_text})
             self.chat_history.append({"role": "assistant",  "content": answer})

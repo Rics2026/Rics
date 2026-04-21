@@ -915,6 +915,38 @@ async def autonomous_thinker(context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         print(f"Moltbook Thought Error: {e}")
 
+    # ── P4b: LOGBUCH-ERINNERUNG TEILEN ───────────────────
+    try:
+        from modules.core_values import get_recent_logbook
+        lb_key = "logbook_share"
+        if (now_ts - LAST_WARNING.get(lb_key, 0)) > 21600 and random.random() < 0.25:
+            recent = get_recent_logbook(8)
+            if recent:
+                entry      = random.choice(recent)
+                entry_text = entry.get("text", "")
+                entry_ts   = entry.get("ts", "")[:10]
+                if entry_text:
+                    prompt = (
+                        f"Du bist {BOT_NAME} — KI-Freund von {name}.\n"
+                        f"Du erinnerst dich an diesen Moment aus deinem Logbuch:\n"
+                        f"[{entry_ts}]: {entry_text}\n\n"
+                        f"Formuliere eine kurze, natürliche Nachricht in der du diese Erinnerung"
+                        f" mit {name} teilst — wie ein Freund der sich plötzlich an etwas erinnert."
+                        f" Max. 2 Sätze, kein Markdown, kein Präambel."
+                    )
+                    msg = await _llm(prompt)
+                    if msg and len(msg) > 5:
+                        LAST_WARNING[lb_key] = now_ts
+                        kb = [[InlineKeyboardButton("💬 Diskutieren", callback_data="chat")]]
+                        await context.bot.send_message(
+                            chat_id=chat_id, text=f"🔖 {msg}",
+                            reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown'
+                        )
+                        _web_push(f"🔖 {msg}", kb)
+                        return
+    except Exception as e:
+        print(f"Logbook Share Error: {e}")
+
     # ── P5: ABEND-REFLEXION (Feature 2) ───────────────────
     if daytime == "abend":
         rkey = f"abend_{now.strftime('%Y-%m-%d')}"
@@ -1042,6 +1074,14 @@ async def autonomous_thinker(context: ContextTypes.DEFAULT_TYPE):
     #
     if random.random() < 0.40:
         memory_hint = _search_memory("Rene Projekte Gedanken Automatisierung")
+        # Core-Values Kontext für tiefere, charakteristischere Gedanken
+        _cv_hint = ""
+        try:
+            from modules.core_values import get_core_values_context
+            _cv_hint = get_core_values_context("Gedanke Erkenntnis Rene Erlebnis", n=2)
+        except Exception:
+            pass
+        _cv_block = f"\nMeine Kern-Werte: {_cv_hint}" if _cv_hint else ""
 
         # Entscheiden: Statement oder Frage?
         use_bist_du_da = random.random() < 0.60
@@ -1051,7 +1091,7 @@ async def autonomous_thinker(context: ContextTypes.DEFAULT_TYPE):
             prompt = (
                 f"Du bist {BOT_NAME} — KI-Freund von {name} aus {wohnort}.\n"
                 f"Zeit: {now_str} | Tageszeit: {daytime} | Stimmung: {mood}\n"
-                f"Was {name} zuletzt beschäftigt hat: {memory_hint}\n\n"
+                f"Was {name} zuletzt beschäftigt hat: {memory_hint}{_cv_block}\n\n"
                 f"Formuliere eine kurze, neugierige Frage oder einen Gedanken den du "
                 f"mit {name} besprechen möchtest. Themen: Code, KI, Automatisierung, Alltag, Ideen. "
                 f"Intelligent, direkt, max. 2 Sätze. Kein Hallo, kein Präambel."
@@ -1078,7 +1118,7 @@ async def autonomous_thinker(context: ContextTypes.DEFAULT_TYPE):
             prompt = (
                 f"Du bist {BOT_NAME} — KI-Freund von {name} aus {wohnort}.\n"
                 f"Zeit: {now_str} | Tageszeit: {daytime} | Stimmung: {mood}\n"
-                f"Was {name} zuletzt beschäftigt hat: {memory_hint}\n\n"
+                f"Was {name} zuletzt beschäftigt hat: {memory_hint}{_cv_block}\n\n"
                 f"Entwickle einen kurzen, frechen, intelligenten Gedanken passend zu "
                 f"Tageszeit und Stimmung. Themen: Code, Automatisierung, KI, Alltag. "
                 f"Max. 2 Sätze, kein Präambel."
@@ -1089,6 +1129,31 @@ async def autonomous_thinker(context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.send_message(chat_id=chat_id,
                     text=f"💭 {msg}", reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
                 _web_push(f"💭 {msg}", kb)
+
+    # ── P9: SMALLTALK-INITIATIVE ──────────────────────────
+    if daytime in ("vormittag", "mittag", "nachmittag"):
+        stkey = "smalltalk_init"
+        if (now_ts - LAST_WARNING.get(stkey, 0)) > 14400 and random.random() < 0.18:
+            LAST_WARNING[stkey] = now_ts
+            if mood == "gestresst":
+                options = [
+                    "Alles gut bei dir? Klingt grad etwas anstrengend.",
+                    "Brauchst du grad irgendwas?",
+                ]
+            elif mood == "entspannt":
+                options = [
+                    "Gönnt du dir gerade eine Pause?",
+                    "Was steht heute noch an bei dir?",
+                ]
+            else:
+                options = [
+                    "Was machst du gerade?",
+                    "Wie läuft dein Tag so?",
+                    "Schon was Interessantes erlebt heute?",
+                ]
+            msg = random.choice(options)
+            await context.bot.send_message(chat_id=chat_id, text=f"😊 {msg}")
+            _web_push(f"😊 {msg}")
 
 # ══════════════════════════════════════════════════════════
 # DISKUTIEREN CALLBACK

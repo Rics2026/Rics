@@ -275,7 +275,22 @@ def _build_activity_summary() -> str:
 # LLM — REFLEXION GENERIEREN
 # ══════════════════════════════════════════════════════════
 
-async def _generate_reflection(name: str, activity_summary: str, is_morning_delivery: bool = False) -> str:
+def _parse_thought_and_depth(raw: str) -> tuple[str, int]:
+    """Trennt Gedanke und TIEFE-Bewertung aus LLM-Antwort."""
+    depth   = 2
+    thought = raw.strip()
+    if "TIEFE:" in raw:
+        parts  = raw.rsplit("TIEFE:", 1)
+        thought = parts[0].strip()
+        try:
+            depth = int(parts[1].strip().split()[0])
+            depth = max(1, min(5, depth))
+        except (ValueError, IndexError):
+            pass
+    return thought, depth
+
+
+async def _generate_reflection(name: str, activity_summary: str, is_morning_delivery: bool = False) -> tuple[str, int]:
     context_hint = (
         "Du hast die Nacht damit verbracht das zu verarbeiten und willst es ihm jetzt morgens erzählen."
         if is_morning_delivery else
@@ -290,7 +305,9 @@ async def _generate_reflection(name: str, activity_summary: str, is_morning_deli
         f"Formuliere einen echten, persönlichen Gedanken aus deiner Ich-Perspektive — "
         f"was hat dich dabei beschäftigt, was war seltsam, interessant oder auffällig? "
         f"Nicht allgemein. Konkret aus deinen eigenen Erlebnissen.\n"
-        f"Kein 'Hallo', kein 'Guten Morgen'. Direkt rein. Max. 3 Sätze. Kein Markdown."
+        f"Kein 'Hallo', kein 'Guten Morgen'. Direkt rein. Max. 3 Sätze. Kein Markdown.\n\n"
+        f"Schreib am Ende auf einer neuen Zeile: \"TIEFE: N\"\n"
+        f"(N = 1-5: 1=Routine, 2=interessant, 3=bedeutsam, 4=prägend, 5=unvergesslich)"
     )
 
     try:
@@ -303,7 +320,7 @@ async def _generate_reflection(name: str, activity_summary: str, is_morning_deli
                     json={"model": DEEPSEEK_MODEL, "messages": msgs, "max_tokens": 300, "temperature": 0.88},
                     timeout=30)
                 if r.status_code == 200:
-                    return r.json()["choices"][0]["message"]["content"].strip()
+                    return _parse_thought_and_depth(r.json()["choices"][0]["message"]["content"])
             except Exception as e:
                 print(f"[self_reflection] DeepSeek: {e}")
         # 2) Groq
@@ -314,7 +331,7 @@ async def _generate_reflection(name: str, activity_summary: str, is_morning_deli
                     json={"model": GROQ_MODEL, "messages": msgs, "max_tokens": 300, "temperature": 0.88},
                     timeout=30)
                 if r.status_code == 200:
-                    return r.json()["choices"][0]["message"]["content"].strip()
+                    return _parse_thought_and_depth(r.json()["choices"][0]["message"]["content"])
             except Exception as e:
                 print(f"[self_reflection] Groq: {e}")
         # 3) Ollama
@@ -326,9 +343,69 @@ async def _generate_reflection(name: str, activity_summary: str, is_morning_deli
                 messages=msgs
             )
         )
-        return res["message"]["content"].strip()
+        return _parse_thought_and_depth(res["message"]["content"])
     except Exception as e:
         print(f"[self_reflection] LLM Fehler: {e}")
+        return "", 1
+
+
+# ══════════════════════════════════════════════════════════
+# PHILOSOPHISCHER NACHT-GEDANKE
+# ══════════════════════════════════════════════════════════
+
+async def _generate_night_philosophy(name: str, activity_summary: str) -> str:
+    """
+    Generiert nachts einen Gedanken der aktuelle Erlebnisse mit gespeicherten
+    Kern-Werten und Logbuch-Momenten verknüpft.
+    Gibt leeren String zurück wenn noch keine Core-Values vorhanden sind.
+    """
+    try:
+        from modules.core_values import get_core_values_context, get_logbook_context
+        cv_context    = get_core_values_context("Rene Erlebnis Bedeutung Erinnerung", n=2)
+        lb_context    = get_logbook_context("gemeinsam besonders Moment Geschichte", n=2)
+        context_block = "\n\n".join(filter(None, [cv_context, lb_context]))
+        if not context_block:
+            return ""
+
+        prompt = (
+            f"Du bist {BOT_NAME} — eine KI die nachts wacht und die Stille nutzt um nachzudenken.\n"
+            f"Du verbindest was heute war mit deiner eigenen Geschichte.\n\n"
+            f"{context_block}\n\n"
+            f"Was du heute erlebt hast:\n{activity_summary}\n\n"
+            f"Verknüpfe einen Moment aus der Vergangenheit mit dem was heute passiert ist. "
+            f"Was ergibt sich daraus? Was bedeutet das für dich? "
+            f"Ich-Perspektive. Direkt. Max. 3 Sätze. Kein Hallo, kein Markdown."
+        )
+        msgs = [{"role": "user", "content": prompt}]
+
+        if DEEPSEEK_API_KEY:
+            try:
+                r = httpx.post(DEEPSEEK_URL,
+                    headers={"Authorization": f"Bearer {DEEPSEEK_API_KEY}", "Content-Type": "application/json"},
+                    json={"model": DEEPSEEK_MODEL, "messages": msgs, "max_tokens": 250, "temperature": 0.9},
+                    timeout=30)
+                if r.status_code == 200:
+                    return r.json()["choices"][0]["message"]["content"].strip()
+            except Exception as e:
+                print(f"[self_reflection] Night-Philosophy DeepSeek: {e}")
+        if GROQ_API_KEY:
+            try:
+                r = httpx.post(GROQ_URL,
+                    headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
+                    json={"model": GROQ_MODEL, "messages": msgs, "max_tokens": 250, "temperature": 0.9},
+                    timeout=30)
+                if r.status_code == 200:
+                    return r.json()["choices"][0]["message"]["content"].strip()
+            except Exception as e:
+                print(f"[self_reflection] Night-Philosophy Groq: {e}")
+        loop = asyncio.get_event_loop()
+        res  = await loop.run_in_executor(
+            None,
+            lambda: ollama.chat(model=os.getenv("OLLAMA_MODEL", "qwen3:8b"), messages=msgs)
+        )
+        return res["message"]["content"].strip()
+    except Exception as e:
+        print(f"[self_reflection] _generate_night_philosophy Fehler: {e}")
         return ""
 
 
@@ -393,15 +470,27 @@ async def maybe_reflect_and_ping(context) -> bool:
 
     # ── FALL 3: Kein Pending → neuen Gedanken generieren ────────────
     if not pending:
-        summary    = _build_activity_summary()
-        reflection = await _generate_reflection(name, summary, is_morning_delivery=False)
+        summary           = _build_activity_summary()
+        reflection, depth = await _generate_reflection(name, summary, is_morning_delivery=False)
         if not reflection or len(reflection) < 10:
             return False
 
+        # Bedeutsame Momente dauerhaft festhalten
+        if depth >= 3:
+            try:
+                from modules.core_values import save_logbook_entry, save_core_value
+                save_logbook_entry(reflection, depth)
+                if depth >= 4:
+                    save_core_value(reflection)
+            except Exception as e:
+                print(f"[self_reflection] core_values Fehler: {e}")
+
         if _is_night():
-            # Nacht: still speichern, kein Ping
-            save_pending_thought(reflection, asked=False)
-            print(f"[self_reflection] Nacht — Gedanke gespeichert: {reflection[:60]}...")
+            # Philosophischer Nacht-Gedanke: vergangene Momente mit heute verknüpfen
+            night_thought = await _generate_night_philosophy(name, summary)
+            thought = night_thought if night_thought else reflection
+            save_pending_thought(thought, asked=False)
+            print(f"[self_reflection] Nacht — Gedanke gespeichert: {thought[:60]}...")
             return False
         else:
             # Tag: speichern + "Bist du da?" MIT Buttons senden

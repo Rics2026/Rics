@@ -1189,17 +1189,35 @@ document.addEventListener('DOMContentLoaded', function() {
         }
         // Live-Push: Modul-Nachricht
         if (d.push) {
-          appendMsg('bot', d.push);
-          var box = document.getElementById('chatbox');
-          if (box) box.scrollTop = box.scrollHeight;
+          var msgDiv = appendMsg('bot', d.push);
           // Browser-Notification wenn Tab nicht fokussiert
           try {
             if (document.hidden && Notification.permission === 'granted') {
               new Notification('RICS', { body: d.push });
             }
           } catch(notifErr) {}
-          if (d.buttons) {
-            try { renderInlineKeyboard(d.buttons); } catch(kbErr) {}
+          // Buttons direkt in die Nachricht einbetten (nicht separat in chatbox)
+          if (d.buttons && msgDiv) {
+            try {
+              var kbWrap = document.createElement('div');
+              kbWrap.style.cssText = 'display:flex;gap:.4rem;flex-wrap:wrap;margin-top:.6rem';
+              d.buttons.forEach(function(row) {
+                row.forEach(function(btn) {
+                  var b = document.createElement('button');
+                  b.className = 'qbtn';
+                  b.type = 'button';
+                  b.style.cssText = 'font-size:.78rem;padding:.5rem .9rem;touch-action:manipulation';
+                  b.textContent = btn.text;
+                  if (btn.data) {
+                    b.addEventListener('click', (function(bd){ return function(ev){ ev.preventDefault(); sendMsg(bd); }; })(btn.data));
+                  }
+                  kbWrap.appendChild(b);
+                });
+              });
+              msgDiv.appendChild(kbWrap);
+              var box = document.getElementById('chatbox');
+              if (box) box.scrollTop = box.scrollHeight;
+            } catch(kbErr) {}
           }
         }
       } catch(err) {}

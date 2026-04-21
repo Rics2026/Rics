@@ -1,8 +1,4 @@
-Update 2.6
-- Ki Update - Reflection-Logbook,Self-Reflection erkennt, dass eine Interaktion eine tiefe Bedeutung hat
-              wird dieser Eintrag mit einem permanent-Flag versehen.verknüpft alte Erfolge mit neuen Zielen
-- discord_ki_server.py Bugfix sollte nun jeder heartbeat seperat laufen.
-- core_values.py Neu verknüpft und sucht nach besonderen ereignissen.
-
+Update 2.7
+- web_app Bugfix Button Container
 
 

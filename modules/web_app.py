@@ -1193,11 +1193,13 @@ document.addEventListener('DOMContentLoaded', function() {
           var box = document.getElementById('chatbox');
           if (box) box.scrollTop = box.scrollHeight;
           // Browser-Notification wenn Tab nicht fokussiert
-          if (document.hidden && Notification.permission === 'granted') {
-            new Notification('RICS', { body: d.push });
-          }
+          try {
+            if (document.hidden && Notification.permission === 'granted') {
+              new Notification('RICS', { body: d.push });
+            }
+          } catch(notifErr) {}
           if (d.buttons) {
-            renderInlineKeyboard(d.buttons);
+            try { renderInlineKeyboard(d.buttons); } catch(kbErr) {}
           }
         }
       } catch(err) {}
@@ -1693,6 +1695,24 @@ def push_stream():
                         elif "BOT:" in line:
                             msg = line.split("BOT:", 1)[-1].strip()
                             yield "data: " + json.dumps({"replay": True, "who": "bot", "msg": msg}) + "\n\n"
+        except Exception:
+            pass
+        # Pending "bist du da?" nachliefern falls vorhanden (TTL 30 Min)
+        try:
+            if _telegram_app:
+                pending = _telegram_app.bot_data.get("pending_bist_du_da", {})
+                if pending and pending.get("text"):
+                    import time as _time
+                    age = _time.time() - pending.get("ts", 0)
+                    if age < 1800:  # 30 Minuten TTL
+                        _bdda_buttons = [[
+                            {"text": "✅ Ja",  "data": "bist_du_da_ja"},
+                            {"text": "❌ Nein", "data": "bist_du_da_nein"},
+                        ]]
+                        yield "data: " + json.dumps({
+                            "push": "🤔 Hey, bist du da? Ich hab grad einen Gedanken...",
+                            "buttons": _bdda_buttons,
+                        }) + "\n\n"
         except Exception:
             pass
         # Heartbeat damit die Verbindung nicht abbricht

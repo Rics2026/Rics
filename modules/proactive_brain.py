@@ -55,7 +55,7 @@ SETTINGS_FILE = os.path.join(PROJECT_DIR, "memory", "proactive_settings.json")
 INTERESTS_FILE= os.path.join(PROJECT_DIR, "memory", "proactive_interests.json")
 MODULES_DIR   = os.path.join(PROJECT_DIR, "modules")
 AGENDA_FILE   = os.path.join(PROJECT_DIR, "agenda.json")
-PERSONAL_FILE = os.path.join(PROJECT_DIR,"memory" "personal.json")
+PERSONAL_FILE = os.path.join(PROJECT_DIR,"memory", "personal.json")
 MOLTBOOK_LOG  = os.path.join(PROJECT_DIR, "logs", "moltbook.log")
 VISION_INDEX_FILE = os.path.join(PROJECT_DIR, "memory", "vision_archive", "index.json")
 

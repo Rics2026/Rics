@@ -28,6 +28,13 @@ GROQ_API_KEY     = os.getenv("GROQ_API_KEY", "")
 GROQ_MODEL       = "llama-3.3-70b-versatile"
 GROQ_URL         = "https://api.groq.com/openai/v1/chat/completions"
 
+def _sanitize_md(text: str) -> str:
+    """Entfernt unbalancierte Markdown-Sonderzeichen aus LLM-Output."""
+    for ch in ('*', '_', '`'):
+        if text.count(ch) % 2 != 0:
+            text = text.replace(ch, '')
+    return text
+
 def _web_push(msg: str, buttons=None):
     """Sendet Nachricht an Webchat falls offen — optional mit Inline-Buttons."""
     try:
@@ -55,7 +62,7 @@ SETTINGS_FILE = os.path.join(PROJECT_DIR, "memory", "proactive_settings.json")
 INTERESTS_FILE= os.path.join(PROJECT_DIR, "memory", "proactive_interests.json")
 MODULES_DIR   = os.path.join(PROJECT_DIR, "modules")
 AGENDA_FILE   = os.path.join(PROJECT_DIR, "agenda.json")
-PERSONAL_FILE = os.path.join(PROJECT_DIR,"memory", "personal.json")
+PERSONAL_FILE = os.path.join(PROJECT_DIR,"memory" "personal.json")
 MOLTBOOK_LOG  = os.path.join(PROJECT_DIR, "logs", "moltbook.log")
 VISION_INDEX_FILE = os.path.join(PROJECT_DIR, "memory", "vision_archive", "index.json")
 
@@ -607,7 +614,7 @@ async def _llm(prompt: str) -> str:
                 json={"model": DEEPSEEK_MODEL, "messages": msgs, "max_tokens": 350, "temperature": 0.85},
                 timeout=30))
             if r.status_code == 200:
-                return r.json()["choices"][0]["message"]["content"].strip()
+                return _sanitize_md(r.json()["choices"][0]["message"]["content"].strip())
         except Exception as e:
             print(f"[proactive_brain] DeepSeek: {e}")
     # 2) Groq
@@ -620,7 +627,7 @@ async def _llm(prompt: str) -> str:
                 json={"model": GROQ_MODEL, "messages": msgs, "max_tokens": 350, "temperature": 0.85},
                 timeout=30))
             if r.status_code == 200:
-                return r.json()["choices"][0]["message"]["content"].strip()
+                return _sanitize_md(r.json()["choices"][0]["message"]["content"].strip())
         except Exception as e:
             print(f"[proactive_brain] Groq: {e}")
     # 3) Ollama
@@ -634,7 +641,8 @@ async def _llm(prompt: str) -> str:
             )
         )
         text = res['message']['content'].strip()
-        return re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip() if "<think>" in text else text
+        text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL).strip() if "<think>" in text else text
+        return _sanitize_md(text)
     except Exception as e:
         print(f"[proactive_brain] LLM Fehler: {e}")
         return ""

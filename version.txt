@@ -1,4 +1,4 @@
-Version 2.8
+Version 2.9
 bot.py
 modules/updater.py
 modules/proactive_brain.py

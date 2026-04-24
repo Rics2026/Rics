@@ -1204,10 +1204,12 @@ merke_wrapper.category    = "Gedächtnis"
 async def ichnbin_wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
     jarvis: Jarvis = context.application.bot_data["jarvis"]
     text = jarvis.personal.as_text()
+    escaped = html.escape(text)
     MAX = 3800
-    if len(text) > MAX:
-        text = text[:MAX] + "\n… (gekürzt)"
-    await update.message.reply_text(f"<pre>{html.escape(text)}</pre>", parse_mode="HTML")
+    chunks = [escaped[i:i+MAX] for i in range(0, len(escaped), MAX)]
+    for i, chunk in enumerate(chunks):
+        prefix = f"<b>📋 Ich weiß über dich ({i+1}/{len(chunks)}):</b>\n" if len(chunks) > 1 else ""
+        await update.message.reply_text(f"{prefix}<pre>{chunk}</pre>", parse_mode="HTML")
 
 ichnbin_wrapper.description = "Zeigt alles was RICS über dich weiß"
 ichnbin_wrapper.category    = "Gedächtnis"
@@ -1218,14 +1220,13 @@ async def vergiss_wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
     arg = " ".join(context.args).strip()
     if not arg:
         text = jarvis.personal.as_text()
+        escaped = html.escape(text)
         MAX = 3600
-        if len(text) > MAX:
-            text = text[:MAX] + "\n… (gekürzt)"
-        await update.message.reply_text(
-            f"<pre>{html.escape(text)}</pre>\n\n"
-            "Zum Löschen: <code>/vergiss &lt;Nummer&gt;</code>",
-            parse_mode="HTML"
-        )
+        chunks = [escaped[i:i+MAX] for i in range(0, len(escaped), MAX)]
+        for i, chunk in enumerate(chunks):
+            suffix = "\n\nZum Löschen: <code>/vergiss &lt;Nummer&gt;</code>" if i == len(chunks) - 1 else ""
+            prefix = f"<b>📋 Fakten ({i+1}/{len(chunks)}):</b>\n" if len(chunks) > 1 else ""
+            await update.message.reply_text(f"{prefix}<pre>{chunk}</pre>{suffix}", parse_mode="HTML")
         return
     if jarvis.personal.delete_fact(arg):
         await update.message.reply_text(f"🗑️ Fakt [{arg}] gelöscht.")

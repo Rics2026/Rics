@@ -90,6 +90,28 @@ class Brain:
         with open(CHATLOG_FILE, "w", encoding="utf-8") as f:
             json.dump(logs, f, indent=4, ensure_ascii=False)
 
+    # ----------------- DIREKT-LOG (sync, für Module) -----------------
+    def log_data_sync(self, stats: dict, extra: dict = None):
+        """Synchroner brain_log-Eintrag — nutzbar von Modulen ohne async."""
+        try:
+            logs = []
+            if os.path.exists(BRAIN_LOG_FILE):
+                with open(BRAIN_LOG_FILE, "r", encoding="utf-8") as f:
+                    logs = json.load(f)
+        except Exception:
+            logs = []
+
+        entry = {"timestamp": self.get_now().isoformat(), "data": stats}
+        if extra:
+            entry.update(extra)
+        logs.append(entry)
+
+        if len(logs) > 1000:
+            logs = logs[-1000:]
+
+        with open(BRAIN_LOG_FILE, "w", encoding="utf-8") as f:
+            json.dump(logs, f, indent=4, ensure_ascii=False)
+
     # ----------------- HISTORISCHE ABFRAGEN -----------------
     def get_historical(self, query: str):
         if not os.path.exists(BRAIN_LOG_FILE):
@@ -132,13 +154,18 @@ class Brain:
             target_time = (t.hour, t.minute)
 
         # Schlüsselwort-Mapping: Nutzerfragen → brain_log Felder
+        # FIX: "data"-Keywords erweitert um system/status/uptime/auslastung/ressourcen/info
         TOPIC_MAP = {
-            "solar":      ["solar", "strom", "einspeisung", "netzbezug", "watt", "anlage"],
-            "wetter":     ["wetter", "temperatur", "regen", "wind", "grad"],
-            "benzin":     ["benzin", "sprit", "tanken", "diesel", "e5", "e10"],
-            "mood":       ["stimmung", "mood", "laune"],
+            "solar":         ["solar", "strom", "einspeisung", "netzbezug", "watt", "anlage", "photovoltaik"],
+            "wetter":        ["wetter", "temperatur", "regen", "wind", "grad", "klima"],
+            "benzin":        ["benzin", "sprit", "tanken", "diesel", "e5", "e10", "kraftstoff"],
+            "mood":          ["stimmung", "mood", "laune"],
             "top_interests": ["interessen", "interesse", "topics"],
-            "data":       ["ram", "cpu", "disk", "speicher", "prozessor"],
+            "data":          [
+                "ram", "cpu", "disk", "speicher", "prozessor",
+                "system", "status", "uptime", "auslastung", "ressourcen",
+                "info", "festplatte", "arbeitsspeicher", "last", "performance",
+            ],
         }
 
         def match_topic(q):
@@ -164,7 +191,7 @@ class Brain:
             ts_str = timestamp.strftime('%H:%M')
 
             # Top-Level Felder (solar, wetter, benzin, mood, top_interests)
-            if matched_field and matched_field in entry:
+            if matched_field and matched_field != "data" and matched_field in entry:
                 val = entry[matched_field]
                 if isinstance(val, dict):
                     summary = ", ".join(f"{k}: {v}" for k, v in val.items())
@@ -172,19 +199,26 @@ class Brain:
                 else:
                     candidates.append(f"{matched_field} ({ts_str}): {val}")
 
-            # System-Daten (data-Dict)
+            # System-Daten (data-Dict) — bei matched_field="data" ODER keinem Match
             elif matched_field == "data" or not matched_field:
-                data = entry.get("data", {})
-                for key, value in data.items():
-                    key_l = key.lower()
-                    if key_l in query_l or query_l in key_l:
-                        candidates.append(f"{key}: {value} ({ts_str})")
+                data_dict = entry.get("data", {})
+                if data_dict:
+                    if matched_field == "data":
+                        # Volles System-Summary zurückgeben
+                        summary = ", ".join(f"{k}: {v}" for k, v in data_dict.items())
+                        candidates.append(f"system ({ts_str}): {summary}")
+                    else:
+                        # Kein Match: einzelne Keys prüfen
+                        for key, value in data_dict.items():
+                            key_l = key.lower()
+                            if key_l in query_l or query_l in key_l:
+                                candidates.append(f"{key}: {value} ({ts_str})")
 
             if candidates:
                 break
 
         if not candidates:
-            # Letzten Eintrag als Fallback — alles was da ist
+            # Letzten Eintrag als Fallback — alle bekannten Felder
             if logs:
                 last = logs[-1]
                 try:
@@ -192,7 +226,8 @@ class Brain:
                 except:
                     ts = "?"
                 parts = []
-                for field in ["solar", "wetter", "benzin", "mood", "top_interests"]:
+                # FIX: "data" jetzt auch im Fallback enthalten
+                for field in ["solar", "wetter", "benzin", "mood", "top_interests", "data"]:
                     if field in last:
                         val = last[field]
                         if isinstance(val, dict):

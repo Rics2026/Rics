@@ -1204,6 +1204,9 @@ merke_wrapper.category    = "Gedächtnis"
 async def ichnbin_wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
     jarvis: Jarvis = context.application.bot_data["jarvis"]
     text = jarvis.personal.as_text()
+    MAX = 3800
+    if len(text) > MAX:
+        text = text[:MAX] + "\n… (gekürzt)"
     await update.message.reply_text(f"<pre>{html.escape(text)}</pre>", parse_mode="HTML")
 
 ichnbin_wrapper.description = "Zeigt alles was RICS über dich weiß"
@@ -1215,6 +1218,9 @@ async def vergiss_wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
     arg = " ".join(context.args).strip()
     if not arg:
         text = jarvis.personal.as_text()
+        MAX = 3600
+        if len(text) > MAX:
+            text = text[:MAX] + "\n… (gekürzt)"
         await update.message.reply_text(
             f"<pre>{html.escape(text)}</pre>\n\n"
             "Zum Löschen: <code>/vergiss &lt;Nummer&gt;</code>",

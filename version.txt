@@ -1,5 +1,6 @@
 Version 2.8
 bot.py
+modules/updater.py
 modules/proactive_brain.py
 modules/status.py
 core/brain.py

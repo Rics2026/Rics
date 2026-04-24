@@ -10,6 +10,7 @@ RICS Updater — GitHub Version (stable)
 - erst nach Bestätigung wird heruntergeladen & ersetzt
 - holt update_notes.txt und zeigt sie im Chat
 - Restart-Button erscheint nach erfolgreicher Installation
+- DELETE: Präfix in version.txt löscht Dateien lokal
 """
 
 import os
@@ -51,13 +52,27 @@ def _local_version() -> str:
 # ─────────────────────────────────────────
 
 def _parse_version_txt(text: str):
+    """
+    Gibt (version, update_files, delete_files) zurück.
+    Zeilen mit 'DELETE:' Präfix → löschen, Rest → herunterladen.
+    """
     lines = [l.strip() for l in text.splitlines() if l.strip()]
     if not lines:
-        return "0.0", []
+        return "0.0", [], []
 
     version = lines[0].replace("Version", "").strip()
-    files = lines[1:]
-    return version, files
+    update_files = []
+    delete_files = []
+
+    for line in lines[1:]:
+        if line.upper().startswith("DELETE:"):
+            path = line[7:].strip()
+            if path:
+                delete_files.append(path)
+        else:
+            update_files.append(line)
+
+    return version, update_files, delete_files
 
 
 # ─────────────────────────────────────────
@@ -89,7 +104,7 @@ def check_for_updates() -> dict:
     except Exception as e:
         return {"status": "error", "msg": f"GitHub Fehler: {e}"}
 
-    remote_ver, file_list = _parse_version_txt(r.text)
+    remote_ver, file_list, delete_list = _parse_version_txt(r.text)
 
     if remote_ver == local_ver:
         return {"status": "up_to_date", "version": local_ver}
@@ -102,6 +117,7 @@ def check_for_updates() -> dict:
         "local": local_ver,
         "remote": remote_ver,
         "files": file_list,
+        "delete": delete_list,
         "notes": notes,
     }
 
@@ -111,7 +127,7 @@ def check_for_updates() -> dict:
 # ─────────────────────────────────────────
 
 def do_install() -> dict:
-    """Lädt die Update-Dateien herunter und ersetzt sie lokal."""
+    """Lädt die Update-Dateien herunter, ersetzt sie lokal und löscht markierte Dateien."""
     local_ver = _local_version()
 
     try:
@@ -120,13 +136,14 @@ def do_install() -> dict:
     except Exception as e:
         return {"status": "error", "msg": f"GitHub Fehler: {e}"}
 
-    remote_ver, file_list = _parse_version_txt(r.text)
+    remote_ver, file_list, delete_list = _parse_version_txt(r.text)
 
     if remote_ver == local_ver:
         return {"status": "up_to_date", "version": local_ver}
 
     updated, failed = [], []
 
+    # ── Dateien herunterladen & ersetzen ──
     for rel_path in file_list:
         try:
             file_url = f"{GITHUB_BASE}/{rel_path}"
@@ -147,7 +164,24 @@ def do_install() -> dict:
             logger.error(f"[Updater] ❌ {rel_path}: {e}")
             failed.append(rel_path)
 
-    if updated:
+    # ── Dateien löschen ──
+    deleted, delete_failed = [], []
+
+    for rel_path in delete_list:
+        dst = os.path.join(PROJECT_DIR, rel_path)
+        try:
+            if os.path.exists(dst):
+                os.remove(dst)
+                deleted.append(rel_path)
+                logger.info(f"[Updater] 🗑️ Gelöscht: {rel_path}")
+            else:
+                logger.info(f"[Updater] ⚠️ Nicht gefunden (skip): {rel_path}")
+                deleted.append(f"{rel_path} (nicht vorhanden)")
+        except Exception as e:
+            logger.error(f"[Updater] ❌ Löschen fehlgeschlagen {rel_path}: {e}")
+            delete_failed.append(rel_path)
+
+    if updated or deleted:
         with open(VERSION_FILE, "w") as f:
             f.write(f"Version {remote_ver}")
 
@@ -159,6 +193,8 @@ def do_install() -> dict:
         "new": remote_ver,
         "updated": updated,
         "failed": failed,
+        "deleted": deleted,
+        "delete_failed": delete_failed,
         "notes": notes,
     }
 
@@ -185,14 +221,19 @@ async def update_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # ── Update verfügbar → Infos anzeigen + Button ──
-    file_count = len(result["files"])
-    notes      = result.get("notes", "")
+    file_count   = len(result["files"])
+    delete_count = len(result.get("delete", []))
+    notes        = result.get("notes", "")
 
     text = (
         f"🆕 <b>Update verfügbar!</b>\n"
         f"Version {result['local']} → <b>{result['remote']}</b>\n\n"
         f"📦 <b>{file_count} Datei(en) werden aktualisiert</b>"
     )
+
+    if delete_count:
+        delete_preview = "\n".join(f"• {f}" for f in result["delete"])
+        text += f"\n🗑️ <b>{delete_count} Datei(en) werden gelöscht:</b>\n{delete_preview}"
 
     if notes:
         text += f"\n\n📋 <b>Was ist neu:</b>\n{notes}"
@@ -230,18 +271,28 @@ async def install_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # ── Installation erfolgreich ──
-    updated_list = "\n".join(f"• {f}" for f in result["updated"])
-    failed_list  = "\n".join(f"• {f}" for f in result["failed"]) if result["failed"] else ""
-    notes        = result.get("notes", "")
+    updated_list      = "\n".join(f"• {f}" for f in result["updated"])
+    failed_list       = "\n".join(f"• {f}" for f in result["failed"]) if result["failed"] else ""
+    deleted_list      = "\n".join(f"• {f}" for f in result.get("deleted", []))
+    delete_failed_list= "\n".join(f"• {f}" for f in result.get("delete_failed", [])) if result.get("delete_failed") else ""
+    notes             = result.get("notes", "")
 
     text = (
         f"🚀 <b>Update installiert!</b>\n"
-        f"Version {result['old']} → <b>{result['new']}</b>\n\n"
-        f"<b>Aktualisierte Dateien:</b>\n{updated_list}"
+        f"Version {result['old']} → <b>{result['new']}</b>"
     )
 
+    if updated_list:
+        text += f"\n\n<b>Aktualisierte Dateien:</b>\n{updated_list}"
+
+    if deleted_list:
+        text += f"\n\n🗑️ <b>Gelöschte Dateien:</b>\n{deleted_list}"
+
     if failed_list:
-        text += f"\n\n⚠️ <b>Fehler:</b>\n{failed_list}"
+        text += f"\n\n⚠️ <b>Fehler (Download):</b>\n{failed_list}"
+
+    if delete_failed_list:
+        text += f"\n\n⚠️ <b>Fehler (Löschen):</b>\n{delete_failed_list}"
 
     if notes:
         text += f"\n\n📋 <b>Was ist neu:</b>\n{notes}"
@@ -249,10 +300,11 @@ async def install_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ── In Webchat pushen ──
     try:
         from modules.web_app import web_push
-        plain = (
-            f"🚀 Update installiert! Version {result['old']} → {result['new']}\n\n"
-            f"Aktualisierte Dateien:\n{updated_list}"
-        )
+        plain = f"🚀 Update installiert! Version {result['old']} → {result['new']}"
+        if updated_list:
+            plain += f"\n\nAktualisierte Dateien:\n{updated_list}"
+        if deleted_list:
+            plain += f"\n\nGelöschte Dateien:\n{deleted_list}"
         if failed_list:
             plain += f"\n\n⚠️ Fehler:\n{failed_list}"
         if notes:

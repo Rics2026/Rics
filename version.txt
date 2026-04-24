@@ -1,4 +1,5 @@
 Version 2.8
+bot.py
 modules/proactive_brain.py
 modules/status.py
 core/brain.py

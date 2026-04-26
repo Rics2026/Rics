@@ -1,7 +1,6 @@
 Version 2.9
-bot.py
-modules/funktions_scan.py
-modules/updater.py
-modules/proactive_brain.py
-modules/status.py
-core/brain.py
+
+modules/orchestrator.py
+modules/web_orchestrator.py
+
+DELETE:modules/code_editor.py

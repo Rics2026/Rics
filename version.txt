@@ -1,5 +1,6 @@
 Version 2.9
 bot.py
+modules/lernmodul.py
 modules/orchestrator.py
 modules/web_orchestrator.py
 

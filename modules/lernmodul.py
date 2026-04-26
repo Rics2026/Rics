@@ -319,6 +319,8 @@ async def learn_topic(topic: str, notify_chat_id: int = None, bot=None) -> dict:
     """
     log.info(f"Lernmodul: Starte Topic '{topic}'")
 
+    state = _load_state()  # einmal laden — wird im Loop aktualisiert
+
     query   = f"{topic} aktuell 2025"
     results = _search_ddg(query, max_results=ARTICLES_PER_TOPIC + 1)
 
@@ -371,7 +373,6 @@ async def learn_topic(topic: str, notify_chat_id: int = None, bot=None) -> dict:
         await asyncio.sleep(1.5)
 
     # State aktualisieren (Zähler & last_learned)
-    state = _load_state()
     state.setdefault("last_learned", {})[topic] = datetime.now().isoformat()
     state["total_facts"]   = state.get("total_facts", 0) + total_facts
     state["articles_read"] = state.get("articles_read", 0) + articles_read
@@ -671,12 +672,12 @@ if __name__ == "__main__":
 
 
 # ── Metadaten ─────────────────────────────────────────────────────────────────
-cmd_learn.description       = "Web-Artikel zu einem Thema lernen und in Gedächtnis speichern | Cron: 0 */6 * * * lernmodul.py"
-cmd_learn.category          = "Gedächtnis"
+cmd_learn.description       = "Web-Artikel zu einem Thema lernen und in Gedächtnis speichern"
+cmd_learn.category          = "Wissen"
 cmd_learn_status.description = "Status des autonomen Lernmoduls anzeigen"
-cmd_learn_status.category   = "Gedächtnis"
+cmd_learn_status.category   = "Wissen"
 cmd_learn_ask.description   = "Im gelernten Web-Wissen suchen"
-cmd_learn_ask.category      = "Gedächtnis"
+cmd_learn_ask.category      = "Wissen"
 
 
 def setup(app):

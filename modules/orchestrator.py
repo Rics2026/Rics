@@ -214,11 +214,39 @@ Nur reiner Python-Code. Keine Backticks. Keine Erklärungen."""
 # SYSTEM-PROMPT FÜR SCRIPT-MODE
 # Erzeugt standalone Python-Skripte ohne Telegram-Abhängigkeit
 # ─────────────────────────────────────────────
-SCRIPT_SYSTEM = """Du bist RICS, ein autonomer KI-Agent auf macOS.
+SCRIPT_SYSTEM = """Du bist eine KI, ein autonomer KI-Agent auf macOS.
 Deine Aufgabe: Schreibe vollständige, sofort lauffähige Python-Skripte die lokal auf macOS ausgeführt werden.
 
+REGEL 0 — METADATEN-HEADER (PFLICHT, EXAKT DIESES FORMAT, ALLERERSTE ZEILEN):
+Die ersten 3 Zeilen MÜSSEN exakt so aussehen:
+# FILENAME: <kurz_und_sprechend>.py
+# REQUIREMENTS: paket1, paket2
+# RUNNABLE: gui | terminal | button
+
+Regeln zu den Headern:
+- FILENAME: nur Kleinbuchstaben/Ziffern/Unterstriche, kein Umlaut. Beispiele: passwortmanager.py, ordner_aufraeumen.py
+- REQUIREMENTS: kommagetrennte pip-Pakete. Wenn nur Stdlib → schreibe "REQUIREMENTS: keine"
+  WICHTIG: NIEMALS tkinter, sqlite3, json, os, sys, re, subprocess etc. nennen — das ist Stdlib!
+- RUNNABLE — exakt einer dieser drei Werte:
+    gui      → Skript hat eine grafische Oberfläche (tkinter, PyQt, customtkinter).
+               Doppelklick öffnet NUR das GUI-Fenster, kein Terminal.
+    terminal → Skript braucht ein Terminal-Fenster (input(), print(), interaktive Eingaben).
+               Doppelklick öffnet ein Terminal-Fenster mit dem Skript darin.
+    button   → Skript läuft einmal durch und gibt Output zurück (Recherche, Berechnung, Backup).
+               Kein Doppelklick-Wrapper nötig, nur "Skript ausführen"-Button.
+
+Beispiel-Header für eine GUI-App:
+# FILENAME: passwortmanager.py
+# REQUIREMENTS: keine
+# RUNNABLE: gui
+
+SIGNAL-PARSING — wähle RUNNABLE basierend auf der Task-Beschreibung:
+- Enthält "GUI-App", "GUI", "tkinter", "Fenster", "Doppelklick-App" → RUNNABLE: gui
+- Enthält "Terminal", "Konsole", "interaktiv", "input()", "Eingabe" → RUNNABLE: terminal
+- Enthält "Recherche", "ein Mal", "einmalig", "Backup", "Berechnung" → RUNNABLE: button
+
 REGELN (ABSOLUT PFLICHT):
-1. Antworte NUR mit reinem Python-Code — kein Markdown, keine Backticks, keine Erklärungen.
+1. Nach den 3 Header-Zeilen: NUR reiner Python-Code — kein Markdown, keine Backticks.
 2. KEIN Telegram-Code, KEINE Telegram-Imports.
 3. Das Skript muss direkt mit 'python3 skript.py' ausführbar sein.
 4. JEDE Funktion braucht vollständiges Fehlerhandling mit try/except.
@@ -226,14 +254,14 @@ REGELN (ABSOLUT PFLICHT):
 6. Für macOS-Interaktion: subprocess.run(['osascript', '-e', script], ...) nutzen.
 7. Für Web-Zugriff: requests oder httpx mit timeout=15 nutzen.
 8. Am Ende: if __name__ == '__main__': main() Aufruf.
+9. GUI erlaubt: tkinter (Stdlib), PyQt6, customtkinter — wenn der User danach fragt oder eine GUI sinnvoll ist.
 
-PFLICHT-STRUKTUR:
+PFLICHT-STRUKTUR (nach den 3 Header-Zeilen):
 import os, sys, re, json, subprocess
 import requests  # falls Web-Zugriff nötig
 
 def main():
     try:
-        # Hauptlogik
         result = do_something()
         print(result)
     except Exception as e:
@@ -242,7 +270,6 @@ def main():
 
 def do_something():
     try:
-        # Implementierung
         return "Ergebnis"
     except Exception as e:
         return f"❌ Fehler: {e}"
@@ -251,7 +278,6 @@ if __name__ == '__main__':
     main()
 
 Nur reiner Python-Code. Kein Markdown. Keine Backticks. Keine Kommentare außerhalb des Codes."""
-
 
 def task_id_safe(task: str) -> str:
     clean      = re.sub(r"[^a-z0-9_]", "_", task.lower())[:32]
@@ -336,39 +362,62 @@ class Orchestrator:
     # hybrid  = erst recherchieren, dann Modul bauen
     # ─────────────────────────────────────────
     async def detect_mode(self, task: str) -> str:
+        # ── Schnelle Vorab-Prüfung: explizite Modul/Telegram-Keywords ──
+        # Nur wenn diese Begriffe im Task auftauchen, ist BUILDER/HYBRID
+        # überhaupt im Spiel. Sonst: lokales Skript oder Recherche.
+        task_lower = task.lower()
+        explicit_module_kw = [
+            "telegram-modul", "telegram modul", "telegram-befehl", "telegram befehl",
+            "/befehl", "bot-modul", "bot modul",
+            "modul ", "modul:", "modul für", "modul fuer",
+            "command-handler", "commandhandler",
+            "als modul", "als telegram", "im bot",
+        ]
+        has_module_intent = any(k in task_lower for k in explicit_module_kw)
+
+        if not has_module_intent:
+            # Kein Modul-Hinweis → entscheide nur zwischen SCRIPT und AGENT
+            prompt = (
+                f"Analysiere diese Aufgabe und antworte NUR mit einem Wort:\n\n"
+                f"AGENT  → Nur Daten recherchieren/ausgeben (einmalige Web-Recherche, kein User-Input nötig)\n"
+                f"SCRIPT → Lokales Python-Programm/Tool/App, das der User mehrfach ausführt oder mit dem er interagiert\n\n"
+                f"Aufgabe: {task}\n\n"
+                f"Beispiele:\n"
+                f"'Finde aktuellen Benzinpreis' → AGENT\n"
+                f"'Was kostet der DAX heute' → AGENT\n"
+                f"'Passwort-Manager mit GUI' → SCRIPT\n"
+                f"'Tool um Ordner aufzuräumen' → SCRIPT\n"
+                f"'Skript zum Backup machen' → SCRIPT\n"
+                f"'Doppelklick-App für Notizen' → SCRIPT\n\n"
+                f"Antworte NUR mit: AGENT oder SCRIPT"
+            )
+            try:
+                result = (await self.llm_call([{"role":"user","content":prompt}])).strip().upper()
+                if "AGENT" in result:  return "agent"
+                return "script"
+            except Exception:
+                # Fallback: einmalige Recherche-Keywords → agent, sonst script
+                research_kw = ["finde", "suche", "was kostet", "wie ist", "aktuell",
+                               "wetter heute", "preis", "kurs"]
+                if any(k in task_lower for k in research_kw): return "agent"
+                return "script"
+
+        # ── Modul explizit gewünscht: zwischen BUILDER und HYBRID entscheiden ──
         prompt = (
-            f"Analysiere diese Aufgabe und antworte NUR mit einem dieser vier Wörter:\n\n"
-            f"AGENT    → Nur Daten recherchieren/ausgeben, kein Modul nötig\n"
-            f"BUILDER  → Telegram-Bot-Modul erstellen (kein Recherche nötig)\n"
-            f"HYBRID   → Erst Daten recherchieren, dann daraus ein Modul bauen\n"
-            f"SCRIPT   → Lokales Python-Skript ohne Telegram, das einmalig oder manuell ausgeführt wird\n\n"
+            f"Der User will ein Telegram-Bot-Modul. Antworte NUR mit einem Wort:\n\n"
+            f"BUILDER → Modul ohne Web-Recherche (rein lokale Logik, AppleScript, Berechnungen)\n"
+            f"HYBRID  → Modul das eine Web-API/Online-Daten nutzt (Wetter, Fahrplan, Preise...)\n\n"
             f"Aufgabe: {task}\n\n"
-            f"Beispiele:\n"
-            f"'Finde aktuellen Benzinpreis' → AGENT\n"
-            f"'Erstelle Kalender-Modul für macOS' → BUILDER\n"
-            f"'Baue ein Modul das DB Fahrplandaten abruft' → HYBRID\n"
-            f"'Wetter-Modul mit OpenWeather API' → HYBRID\n"
-            f"'Schreibe ein Skript das die Fernsehzeitung herunterlädt' → SCRIPT\n"
-            f"'Erstelle ein lokales Skript das Ordner aufräumt' → SCRIPT\n\n"
-            f"Antworte NUR mit: AGENT, BUILDER, HYBRID oder SCRIPT"
+            f"Antworte NUR mit: BUILDER oder HYBRID"
         )
         try:
-            result = await self.llm_call([{"role": "user", "content": prompt}])
-            result = result.strip().upper()
-            if "HYBRID"  in result: return "hybrid"
-            if "SCRIPT"  in result: return "script"
-            if "BUILDER" in result: return "builder"
-            return "agent"
-        except:
-            # Fallback: keyword-basiert
-            keywords_script  = ["skript", "script", "lokal", "lokales", "standalone", "ohne telegram", "datei erstellen", "herunterladen", "download"]
-            keywords_builder = ["modul", "kalender", "applescript", "macos", "tool", "erinnerung", "termin", "handler", "befehl"]
-            keywords_hybrid  = ["api", "fahrplan", "wetter", "online", "abrufen und", "suchen und", "baue ein modul"]
-            task_lower = task.lower()
-            if any(k in task_lower for k in keywords_script):  return "script"
-            if any(k in task_lower for k in keywords_hybrid):  return "hybrid"
-            if any(k in task_lower for k in keywords_builder): return "builder"
-            return "agent"
+            result = (await self.llm_call([{"role":"user","content":prompt}])).strip().upper()
+            if "HYBRID" in result: return "hybrid"
+            return "builder"
+        except Exception:
+            api_kw = ["api", "online", "web", "abruf", "fahrplan", "wetter", "preis", "kurs"]
+            if any(k in task_lower for k in api_kw): return "hybrid"
+            return "builder"
 
     # ─────────────────────────────────────────
     # TELEGRAM LOG-HELPER

@@ -673,11 +673,11 @@ if __name__ == "__main__":
 
 # ── Metadaten ─────────────────────────────────────────────────────────────────
 cmd_learn.description       = "Web-Artikel zu einem Thema lernen und in Gedächtnis speichern"
-cmd_learn.category          = "Wissen"
+cmd_learn.category          = "Gedächtnis"
 cmd_learn_status.description = "Status des autonomen Lernmoduls anzeigen"
-cmd_learn_status.category   = "Wissen"
+cmd_learn_status.category   = "Gedächtnis"
 cmd_learn_ask.description   = "Im gelernten Web-Wissen suchen"
-cmd_learn_ask.category      = "Wissen"
+cmd_learn_ask.category      = "Gedächtnis"
 
 
 def setup(app):

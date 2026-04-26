@@ -463,7 +463,7 @@ class OrchestratorWeb:
                     report = [f"✅ <b>SKRIPT FERTIG</b> — {lines} Zeilen → <code>{html.escape(display)}</code>"]
                     report.append("")
                     if deps:
-                        pip_cmd = "pip3 install " + " ".join(deps)
+                        pip_cmd = "python3 -m pip install " + " ".join(deps)
                         report.append("📦 <b>Bibliotheken installieren:</b>")
                         report.append(f"<pre>{html.escape(pip_cmd)}</pre>")
                     else:

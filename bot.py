@@ -1001,6 +1001,7 @@ Nur JSON:"""
         now_str        = self.brain.get_now().strftime("%d.%m.%Y %H:%M") if self.brain else datetime.now().strftime("%d.%m.%Y %H:%M")
         brain_section  = f"\n### BRAIN:\n{brain_data}"        if brain_data and brain_data != "KEINE DATEN" else ""
         memory_section = f"\n### GEDÄCHTNIS:\n{past_context}" if past_context else ""
+      
 
         # KI-Server Action-Hint — nur wenn discord_ki_server geladen ist
         ki_server_section = ""
@@ -1019,13 +1020,43 @@ Nur JSON:"""
             )
         except ImportError:
             pass
+     
+        # ── Web-Wissen aus lernmodul ────────────────────────────
+        web_wissen_section = ""
+        try:
+            from modules.lernmodul import search_web_knowledge, _load_state
+            _wissen = search_web_knowledge(user_text, n=3)
+            
+            # Lern-Summary immer dabei (was wurde heute gelernt)
+            _state = _load_state()
+            _last = _state.get("last_learned", {})
+            _heute = []
+            for _topic, _ts in _last.items():
+                try:
+                    from datetime import datetime
+                    _age_h = (datetime.now() - datetime.fromisoformat(_ts)).total_seconds() / 3600
+                    if _age_h < 24:
+                        _heute.append(_topic)
+                except Exception:
+                    pass
+            
+            parts = []
+            if _heute:
+                parts.append(f"Heute gelernte Topics: {', '.join(_heute)}")
+            if _wissen:
+                parts.append(_wissen)
+            if parts:
+                web_wissen_section = "\n### WEB-WISSEN:\n" + "\n".join(parts)
+        except Exception:
+            pass
+        # ────────────────────────────────────────────────────────
 
         system_msg = f"""{self.system_prompt}
 
 ━━━ AKTUELLE ZEIT: {now_str} ━━━
 (Diese Zeit ist verbindlich — verwende sie für alle zeitbezogenen Aussagen.)
 
-{personal_text}{brain_section}{memory_section}{brain_file_section}{discord_section}{energie_section}{ki_server_section}"""
+{personal_text}{brain_section}{memory_section}{brain_file_section}{discord_section}{energie_section}{web_wissen_section}{ki_server_section}"""
 
         msgs = (
             [{"role": "system", "content": system_msg}]

@@ -671,7 +671,7 @@ if __name__ == "__main__":
 
 
 # ── Metadaten ─────────────────────────────────────────────────────────────────
-cmd_learn.description       = "Web-Artikel zu einem Thema lernen und in Gedächtnis speichern"
+cmd_learn.description       = "Web-Artikel zu einem Thema lernen und in Gedächtnis speichern | Cron: 0 */6 * * * lernmodul.py"
 cmd_learn.category          = "Gedächtnis"
 cmd_learn_status.description = "Status des autonomen Lernmoduls anzeigen"
 cmd_learn_status.category   = "Gedächtnis"

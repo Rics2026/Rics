@@ -1,4 +1,5 @@
-Update 2.8
-- proactive_brain.py pfad angaben repariert
-
+Update 3.0
+- web_orchestrator.py
+  - neue Web Registerkarte Lab.
+  - ganzes Labot wo du mit deinem Bot selbst Module und Programme erzeugen kannst
 

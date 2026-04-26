@@ -37,6 +37,12 @@ load_dotenv(ENV_PATH)
 app = Flask(__name__)
 app.secret_key = os.getenv("WEB_SECRET_KEY", "RICS_BRIDGE_SECRET_KEY_2026")
 
+import sys as _sys, os as _os
+_sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
+from web_orchestrator import orch_blueprint
+app.register_blueprint(orch_blueprint)
+
+
 # ── Globale Instanzen (werden von bot.py via setup() gesetzt) ──────────────
 jarvis_instance = None
 brain_instance  = None
@@ -455,6 +461,7 @@ body::before{content:'';position:fixed;inset:0;background:radial-gradient(ellips
   <button class="tab" onclick="switchTab(event,'befehle');loadCommandsPage()">Befehle</button>
   <button class="tab" onclick="switchTab(event,'sett')">Settings</button>
   <button class="tab" onclick="switchTab(event,'kiconf');loadKiConfig()">KI-Config</button>
+  <a class="tab" href="/lab" style="text-decoration:none">⚗️ Lab</a>
 </div>
 
 <!-- MAIN -->

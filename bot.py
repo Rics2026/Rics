@@ -360,7 +360,7 @@ class PersonalMemory:
 
     def as_text(self) -> str:
         data  = self._read()
-        lines = ["=== WAS RICS ÜBER SIR RENE WEISS ==="]
+        lines = ["=== WAS ICH ÜBER DICH WEISS ==="]
 
         bi = data.get("basisinfo", {})
         if bi.get("name"):    lines.append(f"Name: {bi['name']}")

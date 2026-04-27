@@ -175,6 +175,84 @@ FÜR EXTERNE API-MODULE (KRITISCH — HALLUZINATIONS-SCHUTZ):
   sondern den kostenlosen Fallback-Endpoint aus dem Recherche-Ergebnis nehmen.
 - Bei API-Modulen ohne Recherche-Ergebnis: Absichern mit .get() und sinnvollem Fallback für JEDEN Feldzugriff.
 
+FÜR API-MODULE MIT USER-INPUT (KRITISCH — robuste Eingabe-Behandlung):
+- URL-Parameter NIEMALS in den URL-String f-stringen — bricht bei Umlauten, Leerzeichen, Sonderzeichen.
+  FALSCH: client.get(f"{API}/search?q={user_input}&limit=5")
+  RICHTIG: client.get(f"{API}/search", params={"q": user_input, "limit": 5})
+  httpx/requests encoden über params={} automatisch korrekt.
+- Wenn ein User-Argument ein freitextlicher Wert sein kann (Name, Ort, Titel, Begriff, der Leerzeichen enthalten darf), dann NIEMALS stur args[0]=A, args[1]=B nehmen.
+  Stattdessen in dieser Reihenfolge parsen:
+    1. Vom Ende strukturierte Tokens abschneiden (Zeit HH:MM, Datum YYYY-MM-DD, Zahlen, Flags).
+    2. Im Rest expliziten Trenner suchen: " - ", " → ", " nach ", " bis ", " vs ".
+    3. Erst dann heuristisch splitten (z.B. bei genau zwei Wörtern Wort/Wort).
+    4. Wenn unklar: KEIN raten, sondern Fehlermeldung mit Trenner-Hinweis.
+- Such-/List-Endpoints liefern oft gemischte Treffer-Typen (z.B. Treffer mit unterschiedlichem .get('type')).
+  NIEMALS blind data[0] nehmen — könnte ein Typ ohne die benötigten Felder sein (z.B. ohne 'id').
+  IMMER: Erst nach erwartetem type filtern, falls die API einen Filter-Parameter anbietet diesen mitsenden, dann im Code zusätzlich per .get('type') validieren bevor Felder gelesen werden.
+- Wenn ein User-Lookup nichts findet, NIEMALS nur "nicht gefunden" antworten — IMMER Vorschläge anzeigen.
+  Pattern: bei Nicht-Fund einen zweiten Such-Call (oft mit fuzzy=true oder weiteren Treffern) machen und die ersten Treffer-Namen als "Meintest du: a, b, c?" zurückgeben.
+- Datum/Zeit für API-Calls: NIEMALS getrennte Strings senden ("date=2025-06-15" + "time=14:30"). Erst zu einem datetime-Objekt kombinieren, dann .isoformat() — die meisten APIs erwarten ISO-8601.
+- User-Input mit `params={}` bedeutet auch: keine Notwendigkeit für manuelles urlencode/quote — wenn du quote() siehst, hast du wahrscheinlich den f-String-Pfad genommen → wechsle auf params={}.
+
+DEFENSIVE FELD-ZUGRIFFE (KRITISCH — Anti-"'str' object has no attribute 'get'"):
+- NIEMALS .get() auf einem Feld aufrufen ohne zu wissen ob es ein dict ist.
+  JSON-APIs liefern oft Felder die je nach Variante String, Zahl, dict oder None sind.
+  Beispiel: ein Feld kann bei API-Variante A ein einfacher Wert sein (String/Zahl), bei
+  Variante B ein verschachteltes Objekt mit eigenen Unterfeldern.
+- Wenn das RECHERCHE-ERGEBNIS einen Feldwert als String/Zahl zeigt, NIE im Code
+  `obj["feldname"].get(...)` schreiben — das crasht sofort.
+- IMMER mit isinstance() absichern wenn ein Feld komplex sein KÖNNTE:
+    val = obj.get("feldname")
+    if isinstance(val, dict):
+        inner = val.get("subkey1") or val.get("subkey2")
+    elif isinstance(val, str):
+        inner = val
+    else:
+        inner = None
+- Alternative Pattern fuer kompakten Code:
+    def _safe_get(obj, *keys):
+        # holt verschachtelte Felder, bricht sicher ab wenn ein Zwischenwert kein dict ist
+        for k in keys:
+            if not isinstance(obj, dict):
+                return None
+            obj = obj.get(k)
+        return obj
+- Wenn das Recherche-Ergebnis NUR den Endpoint nennt aber KEINE Response-Probe enthaelt:
+  Im Modul defensiv programmieren — JEDEN Feldzugriff mit isinstance-Check oder _safe_get().
+- Im try/except der Karten-/Block-Formatierung: NIEMALS schweigend "?" zurueckgeben und 5x den
+  gleichen Fehler in der Ausgabe stapeln. Bei wiederholtem gleichen Fehler einmal melden, dann return.
+
+RESILIENZ BEI HTTP-FEHLERN (KRITISCH — APIs flackern):
+- Cloud-APIs (Caddy/Kubernetes/Cloudflare/AWS) liefern regelmaessig kurzzeitige 5xx
+  (502 Bad Gateway, 503 Service Unavailable, 504 Gateway Timeout).
+- Das fertige Modul MUSS bei 5xx und Timeouts AUTOMATISCH 2x nachversuchen, nicht sofort aufgeben.
+- Pattern (kompakt, generisch fuer JEDE API):
+    async def _api_get(client, url, params=None, max_retries=2):
+        for attempt in range(max_retries + 1):
+            try:
+                resp = await client.get(url, params=params)
+                if resp.status_code in (502, 503, 504):
+                    if attempt < max_retries:
+                        await asyncio.sleep(1.5 * (attempt + 1))
+                        continue
+                resp.raise_for_status()
+                return resp.json()
+            except (httpx.TimeoutException, httpx.RequestError):
+                if attempt < max_retries:
+                    await asyncio.sleep(1.5 * (attempt + 1))
+                    continue
+                raise
+        return None
+- Erst NACH dem Retry-Loop den User mit "❌ API-Fehler: 5xx" benachrichtigen.
+- 4xx-Fehler (400, 401, 403, 404) NICHT wiederholen — die sind permanent (Bug, falscher Param, fehlender Key).
+
+CODE-GRÖSSE (KRITISCH gegen Token-Limit-Abbruch):
+- Halte das Modul KOMPAKT — Ziel: 100–250 Zeilen, Maximum 500.
+- Wenn du nahe am Limit bist, weglassen statt abschneiden: weniger Hilfsfunktionen, kürzere Hilfetexte, weniger Defensive-Kommentare.
+- Strings IN EINER Zeile oder mit Triple-Quotes ''' '''. NIE Backslash-Continuation für lange Strings.
+- Lange URLs IMMER über params={} bauen, niemals als f-String über mehrere Zeilen.
+- Bevor du eine weitere Hilfsfunktion hinzufuegst: pruefe ob das Modul schon alles Wesentliche hat.
+
 NOCHMAL: Nur reiner Python-Code. Kein Markdown. Keine Backticks. Keine Kommentare außerhalb des Codes."""
 
 # ─────────────────────────────────────────────

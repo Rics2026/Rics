@@ -225,6 +225,18 @@ class OrchestratorWeb:
     async def run_code(self, code):
         if "load_dotenv" not in code:
             code = "from dotenv import load_dotenv; load_dotenv()\n" + code
+        # Sanity-Check Code-Groesse: >250 Zeilen Recherche-Code ist fast immer
+        # ein Token-Limit-/Streaming-Artefakt (abgeschnittener String).
+        line_count = len(code.splitlines())
+        if line_count > 250:
+            return "", f"SYNTAX_ERROR: Code zu lang ({line_count} Zeilen) — vermutlich abgeschnitten"
+        # Syntax-Check vorab — spart subprocess-Start bei kaputtem Code
+        # und liefert eine eindeutige Fehlermarkierung fuer das Retry-Handling.
+        try:
+            import ast as _ast
+            _ast.parse(code)
+        except SyntaxError as se:
+            return "", f"SYNTAX_ERROR: {se.msg} (Zeile {se.lineno})"
         try:
             r = await asyncio.get_event_loop().run_in_executor(None, lambda: subprocess.run(
                 [sys.executable, "-c", code], capture_output=True, text=True, timeout=30))
@@ -235,10 +247,86 @@ class OrchestratorWeb:
             return "", str(e)
 
     def validate_module(self, code):
+        # Syntax MUSS valide sein — sonst crasht der Bot beim Laden.
+        try:
+            import ast as _ast
+            _ast.parse(code)
+        except SyntaxError as se:
+            return False, f"Syntax-Fehler: {se.msg} (Zeile {se.lineno}) — Code abgeschnitten?"
+        # Code-Groesse: >800 Zeilen ist fuer ein Telegram-Modul fast immer
+        # ein Token-Limit-/Streaming-Artefakt.
+        line_count = len(code.splitlines())
+        if line_count > 800:
+            return False, f"Code zu lang ({line_count} Zeilen) — vermutlich abgeschnitten"
+        # Mindest-Strukturen
         for kw, err in {"setup(app)": "Keine setup(app)", "CommandHandler": "Kein CommandHandler",
                         "async def": "Keine async-Funktion"}.items():
             if kw not in code: return False, err
         return True, "OK"
+
+    def _research_failed(self, research_result):
+        """Prüft ob Recherche-Ergebnis brauchbar ist.
+        Returns None wenn OK, sonst einen kurzen Fail-Grund (str)."""
+        if not research_result or not research_result.strip():
+            return "leeres Ergebnis"
+        rl = research_result.lower()
+
+        # ── HARTE Fail-Signale (auch bei vorhandenen Erfolgen): explizit aufgegeben ──
+        for sig in ("result: keine_api", "result: kein endpoint",
+                    "result: kein funktionierend", "keine_api_verfuegbar"):
+            if sig in rl:
+                return f"Fail-Signal '{sig.strip()}'"
+
+        # ── Code-Crash hat absoluten Vorrang ──
+        if "syntax_error" in rl or "kein output" in rl[:30]:
+            return "kein Output (Code-Crash)"
+
+        # ── POSITIV-Erkennung: gibt es Hinweise auf einen funktionierenden Endpoint? ──
+        # Recherche darf MEHRERE Endpoints testen — solange MINDESTENS einer 200 lieferte
+        # und eine echte Response-Probe vorhanden ist, ist die Recherche brauchbar.
+        positive_signals = (
+            "status 200",          # explizit 200-Status irgendwo
+            "funktioniert",        # "Endpoint /xy funktioniert"
+            "ok für",              # "OK für https://..."
+            "ok fuer",
+            "result: http",        # RESULT mit URL
+            "result: https",
+        )
+        has_positive = any(p in rl for p in positive_signals)
+
+        # JSON-Probe als Indiz: mind. ein dict mit "id"/"name"/typischen Feldern
+        # Heuristik: { ... "id":  ... } und/oder mehrzeiliger JSON-Block
+        has_json_sample = bool(
+            re.search(r'\{\s*\n[^{}]*"\w+"\s*:', research_result)
+            or re.search(r'"id"\s*:\s*"', research_result)
+        )
+
+        # ── Negative HTTP-Signale ──
+        has_200_token = bool(re.search(r"\b200\b", research_result))
+        http_errs     = set(re.findall(r"\b(4\d{2}|5\d{2})\b", research_result))
+
+        # Wenn klar positiv (200-Status oder "funktioniert") UND eine Struktur-Probe da ist
+        # → akzeptieren, auch wenn parallel ein Fehler-Endpoint getestet wurde.
+        if (has_positive or has_200_token) and has_json_sample:
+            return None
+
+        # Klassische harte Fehler ohne jeglichen Erfolg
+        if http_errs and not (has_positive or has_200_token):
+            return f"HTTP {','.join(sorted(http_errs))} ohne Erfolg"
+        for s in ("service unavailable", "internal server error",
+                  "connection refused", "name or service not known"):
+            if s in rl and not (has_positive or has_200_token):
+                return f"Fehler-Signal '{s}'"
+
+        # Fail-Signale die nur greifen wenn KEIN Positiv-Hinweis im Output ist
+        for sig in ("result: fehler", "result: failed", "result: error", "fehlgeschlagen:"):
+            if sig in rl and not (has_positive or has_json_sample):
+                return f"Fail-Signal '{sig.strip()}'"
+
+        if "result:" not in rl:
+            return "kein RESULT: im Output"
+
+        return None
 
     async def execute_mission(self, task):
         original_task = task
@@ -261,18 +349,120 @@ class OrchestratorWeb:
 
         if mode == "hybrid":
             self.log("🔀 <b>Schritt 2/4</b> — API recherchieren...", "step")
-            try:
-                self.log("🤖 LLM generiert Recherche-Code...", "info")
-                raw = await self._llm([{"role":"system","content":AGENT_SYSTEM},
-                    {"role":"user","content":f"Recherchiere fuer: {task}\nAusgabe: print('RESULT:',...)\nNur Code."}])
-                code = extract_code(raw)
-                self.log(f"✅ Code empfangen ({len(code.splitlines())} Zeilen) — führe aus...", "info")
-                stdout, stderr = await self.run_code(code)
-                research_result = stdout if stdout else f"Kein Output. Stderr: {stderr[:300]}"
-                self.log(f"🔍 Recherche-Ergebnis:\n<pre>{html.escape(research_result[:1200])}</pre>", "result")
-            except Exception as e:
-                research_result = f"Fehlgeschlagen: {e}"
-                self.log(f"⚠️ {research_result}", "warn")
+            research_messages = [
+                {"role":"system","content":AGENT_SYSTEM},
+                {"role":"user","content":(
+                    f"Recherchiere die API fuer folgende Aufgabe:\n{task}\n\n"
+                    f"WICHTIG — was die Recherche tut und was nicht:\n"
+                    f"- Du testest nur OB die API funktioniert und WIE die Response aussieht.\n"
+                    f"- Du baust NICHT den User-Task nach (keine echten User-Werte testen).\n"
+                    f"- Verwende GENERISCHE Test-Werte: einfache Beispielnamen, '1', heutiges Datum.\n"
+                    f"- Nutze NIEMALS spezifische Werte aus der Aufgabenbeschreibung als Test-Parameter\n"
+                    f"  (Eigennamen, Orte, Begriffe aus dem Task gehoeren in den Builder, nicht in die Recherche).\n\n"
+                    f"WORKFLOW (PFLICHT):\n"
+                    f"1. Identifiziere den Haupt-Endpoint fuer das Ziel.\n"
+                    f"2. Erkennt der Endpoint nur IDs/Codes (nicht Klartext-Namen)?\n"
+                    f"   → Dann braucht es einen LOOKUP-Endpoint davor (z.B. /search, /locations,\n"
+                    f"     /find, /lookup, /resolve). BEIDE testen.\n"
+                    f"3. Teste mit generischen Werten. Bei 500/400: pruefe ob Parameter-Format stimmt\n"
+                    f"   (IDs statt Namen? ISO-Datum statt Unix-Timestamp? POST statt GET?).\n"
+                    f"4. Drucke fuer JEDEN funktionierenden Endpoint eine echte Response-Probe:\n"
+                    f"   first = data[0] if isinstance(data, list) and data else data\n"
+                    f"   print(json.dumps(first, indent=2, ensure_ascii=False)[:2000])\n"
+                    f"   Bei verschachtelten Listen (z.B. journeys[0].legs[0]) auch das innere\n"
+                    f"   Element pretty-printen — der Builder muss Feld-Typen sehen.\n"
+                    f"5. Im RESULT NENNEN:\n"
+                    f"   - Den/die funktionierenden Endpoint(s) mit 200\n"
+                    f"   - Das Workflow-Pattern wenn mehrstufig (z.B. 'erst /locations fuer ID,\n"
+                    f"     dann /journeys mit IDs')\n\n"
+                    f"CODE-LIMITS:\n"
+                    f"- Maximal 80 Zeilen. Knapp halten.\n"
+                    f"- Strings IN EINER ZEILE oder mit ''' ''' Triple-Quotes — NIE mit Backslash-Continuation.\n"
+                    f"- Lange URLs nur mit params={{}} bauen, nicht als f-String.\n\n"
+                    f"FAIL-AUSGABE (nur wenn wirklich keine API geht):\n"
+                    f"- print('RESULT: KEINE_API_VERFUEGBAR <kurz warum>')\n"
+                    f"- NICHT 'Kein funktionierender Endpoint' wenn du nur ein 500 mit falschen Params bekommen hast —\n"
+                    f"  in dem Fall pruefe Doku oder anderen Workflow.\n\n"
+                    f"Ausgabe: print('RESULT:', ...)\nNur reiner Python-Code, keine Backticks."
+                )}
+            ]
+
+            research_result   = ""
+            research_ok       = False
+            raw               = ""
+            MAX_RES_ATTEMPTS  = 3
+
+            for r_attempt in range(1, MAX_RES_ATTEMPTS + 1):
+                try:
+                    self.log(f"🤖 LLM generiert Recherche-Code (Versuch {r_attempt}/{MAX_RES_ATTEMPTS})...", "info")
+                    raw = await self._llm(research_messages)
+                    code = extract_code(raw)
+                    self.log(f"✅ Code empfangen ({len(code.splitlines())} Zeilen) — führe aus...", "info")
+                    stdout, stderr = await self.run_code(code)
+                    research_result = stdout if stdout else f"Kein Output. Stderr: {stderr[:300]}"
+                    self.log(f"🔍 Recherche-Ergebnis (Versuch {r_attempt}):\n<pre>{html.escape(research_result[:1200])}</pre>", "result")
+                except Exception as e:
+                    research_result = f"Fehlgeschlagen: {e}"
+                    self.log(f"⚠️ Versuch {r_attempt}: {research_result}", "warn")
+
+                fail_reason = self._research_failed(research_result)
+                if not fail_reason:
+                    research_ok = True
+                    break
+
+                self.log(f"⚠️ Recherche unbrauchbar ({fail_reason})", "warn")
+                if r_attempt < MAX_RES_ATTEMPTS:
+                    # Syntax-/Code-Crash: kaputten Code NICHT in History haengen,
+                    # sonst lernt das LLM aus seinem eigenen Fehler.
+                    is_code_crash = (
+                        "SYNTAX_ERROR" in research_result
+                        or "SyntaxError" in research_result
+                        or "unterminated string" in research_result.lower()
+                        or "was never closed" in research_result.lower()
+                        or "invalid syntax" in research_result.lower()
+                        or "indentationerror" in research_result.lower()
+                    )
+                    if is_code_crash:
+                        self.log("🔁 Code war kaputt → neu generieren (frischer Kontext)...", "info")
+                        # History bleibt unveraendert, nur ein zusaetzlicher Hint:
+                        research_messages = research_messages[:1] + [
+                            {"role":"user","content":(
+                                f"Wichtig: Vorheriger Code hatte einen Python-Syntaxfehler "
+                                f"(z.B. unterminated string, langer URL ueber mehrere Zeilen).\n"
+                                f"Halte diesmal Strings IN EINER Zeile oder nutze Triple-Quotes/"
+                                f"Klammer-Concatenation. Halte URLs kurz und nutze "
+                                f"params={{}} statt langer f-Strings.\n\n"
+                                f"Recherchiere fuer: {original_task}\n"
+                                f"Ausgabe: print('RESULT:',...)\nNur reiner Python-Code, keine Backticks."
+                            )}
+                        ]
+                    else:
+                        self.log("🔁 Suche Alternative oder lese Doku...", "info")
+                        research_messages += [
+                            {"role":"assistant","content": raw or ""},
+                            {"role":"user","content":(
+                                f"Letzte Recherche schlug fehl: {fail_reason}\n"
+                                f"Letztes Output (gekuerzt):\n{research_result[:600]}\n\n"
+                                f"Mach jetzt eines davon:\n"
+                                f"1. Anderen Host/Version testen (z.B. v5 -> v6, prod-, .net, .com).\n"
+                                f"2. Doku-URL fetchen (httpx) und nach funktionierendem Endpoint parsen.\n"
+                                f"3. Komplett andere API fuer das gleiche Ziel finden.\n"
+                                f"PFLICHT: Nur einen Endpoint als RESULT der TATSAECHLICH HTTP 200 lieferte.\n"
+                                f"Nur reiner Python-Code, keine Backticks."
+                            )}
+                        ]
+
+            if not research_ok:
+                self.log(
+                    f"❌ <b>MISSION ABGEBROCHEN</b>\n"
+                    f"Recherche fand nach {MAX_RES_ATTEMPTS} Versuchen keine funktionierende API.\n"
+                    f"Letztes Ergebnis:\n<pre>{html.escape(str(research_result)[:500])}</pre>\n\n"
+                    f"Kein Modul gebaut — sonst waere es mit kaputter API erstellt worden.\n"
+                    f"Bitte spaeter erneut oder Task mit konkretem Endpoint praezisieren.",
+                    "error"
+                )
+                return
+
             self.log("🔀 <b>Schritt 3/4</b> — Modul generieren...", "step")
             task = f"{original_task}\n\nRECHERCHE-ERGEBNIS:\n{research_result}"
             mode = "builder"
@@ -283,12 +473,29 @@ class OrchestratorWeb:
             catalog  = get_module_catalog()
             if catalog:
                 self.log(f"📦 Modul-Katalog geladen ({len(catalog.splitlines())} Einträge)", "info")
+            had_research = (original_task != task)
+            research_block = ""
+            if had_research:
+                research_block = (
+                    f"\n\nWICHTIG zur RECHERCHE oben:\n"
+                    f"- Die RECHERCHE-ERGEBNIS-Sektion ist die SINGLE SOURCE OF TRUTH fuer technische Details.\n"
+                    f"- Nutze GENAU den Endpoint/Host/Pfad aus dem RESULT — NICHT den Wortlaut aus dem Task.\n"
+                    f"  Wenn der Task 'foo.com API' sagt aber RESULT 'https://api.v3.foo.com/items' nennt:\n"
+                    f"  API_BASE = 'https://api.v3.foo.com' (NICHT 'https://foo.com').\n"
+                    f"- Wenn die Recherche zwei Endpoints zeigt (Lookup + Haupt-Endpoint): BEIDE implementieren.\n"
+                    f"  User-Eingabe ist Klartext → erst Lookup-Call (Endpoint aus RESULT verwenden,\n"
+                    f"  typisch sind /search, /find, /lookup, /resolve, /query) →\n"
+                    f"  ID/Code aus Response extrahieren → dann Haupt-Endpoint mit dieser ID/Code aufrufen.\n"
+                    f"- Wenn die Recherche-Probe zeigt dass ein Feld ein String ist (kein dict): NIE .get() darauf.\n"
+                    f"  Wenn die Recherche keinen Feld-Typ zeigt: defensiv mit isinstance() arbeiten.\n"
+                )
             messages = [{"role":"system","content":BUILDER_SYSTEM},
                         {"role":"user","content":
                          f"Erstelle ein vollstaendiges Telegram-Bot-Modul:\n\n{task}\n\n"
                          f"- Reiner Python-Code, keine Backticks\n- Vollstaendig implementiert\n"
                          f"- setup(app) mit allen CommandHandlern\n- Deutsche Ausgaben\n"
-                         f"- chat_id IMMER os.getenv('CHAT_ID')\n\n{catalog}"}]
+                         f"- chat_id IMMER os.getenv('CHAT_ID')"
+                         f"{research_block}\n\n{catalog}"}]
             for attempt in range(1, 3):
                 try:
                     self.log(f"🤖 LLM generiert Code (Versuch {attempt}/2)...", "info")

@@ -1,8 +1,5 @@
-Version 3.0
+Version 3.1
 bot.py
-modules/lernmodul.py
-modules/orchestrator.py
-modules/web_app.py
-modules/web_orchestrator.py
-
-DELETE:modules/code_editor.py
+modules/proactive_brain.py
+modules/self_reflection.py
+modules/mood_timer.py

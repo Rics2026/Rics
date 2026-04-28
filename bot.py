@@ -1127,6 +1127,13 @@ Nur JSON:"""
             except Exception as e:
                 print(f"⚠️ update_interests: {e}")
 
+            # mood_timer — Stimmung + Verfügbarkeit aus Nachricht lernen
+            try:
+                from modules.mood_timer import on_user_message as _mt_msg
+                _mt_msg(user_text)
+            except Exception as e:
+                print(f"⚠️ mood_timer: {e}")
+
             asyncio.create_task(self.learn_from_message(user_text))
 
         except Exception as e:
@@ -1300,6 +1307,9 @@ def load_modules(app: Application):
 
 
 async def post_init(app: Application):
+    from core.safe_send import install as install_safe_send
+    install_safe_send(app.bot)
+
     sm = app.bot_data["session_manager"]
     sm._cleanup_task = asyncio.create_task(sm.start_periodic_cleanup())
     load_modules(app)

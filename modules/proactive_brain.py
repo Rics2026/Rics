@@ -687,18 +687,31 @@ async def proactive_toggle_command(update: Update, context: ContextTypes.DEFAULT
     if not args:
         status      = "✅ AN" if settings.get("enabled", True)              else "❌ AUS"
         data_status = "✅ AN" if settings.get("include_data_updates", False) else "❌ AUS"
-        minutes     = settings.get("interval", DEFAULT_INTERVAL) // 60
         top_i       = get_top_interests(3)
         interests_str = ", ".join(top_i) if top_i else "noch keine Daten"
+
+        # Mood-Timer Status
+        try:
+            from modules.mood_timer import get_status as _mt_status
+            mt = _mt_status()
+            timer_line  = (f"Interval:       *{mt['interval_min']} Min* "
+                           f"(Lvl {mt['skip_level']}, nächste ~{mt['next_send_in_min']} min)\n")
+            mood_line   = (f"Mood-Score:     {mt['mood_score']:+.1f}  |  "
+                           f"Ø Antwort: {mt['avg_response_min'] or '?'} min\n")
+        except Exception:
+            timer_line = f"Interval:       {settings.get('interval', DEFAULT_INTERVAL)//60} Min (mood_timer N/A)\n"
+            mood_line  = ""
+
         msg  = "🛰 *Proactive Brain Status*\n──────────────────────\n"
         msg += f"Proactive:      {status}\n"
         msg += f"Daten-Updates:  {data_status}\n"
-        msg += f"Interval:       {minutes} Min\n"
+        msg += timer_line
+        msg += mood_line
         msg += f"Top-Interessen: `{interests_str}`\n"
         msg += "──────────────────────\n_Befehle:_\n"
         msg += "`/proactive on` — AN\n`/proactive off` — AUS\n"
         msg += "`/proactive data on/off` — Modul-Daten\n"
-        msg += "`/proactive interval MIN` — Interval"
+        msg += "`/proactive reset` — Timer auf Standard zurücksetzen"
         await update.message.reply_text(msg, parse_mode="Markdown")
         return
 
@@ -714,22 +727,20 @@ async def proactive_toggle_command(update: Update, context: ContextTypes.DEFAULT
         save_settings(settings)
         state = "AN" if settings["include_data_updates"] else "AUS"
         await update.message.reply_text(f"📊 Daten-Updates *{state}*", parse_mode="Markdown")
-    elif cmd == "interval" and len(args) > 1:
+    elif cmd == "reset":
         try:
-            minutes = int(args[1])
-            if minutes < 10:
-                await update.message.reply_text("⚠️ Minimum 10 Minuten!")
-                return
-            settings["interval"] = minutes * 60
-            save_settings(settings)
-            for job in context.application.job_queue.get_jobs_by_name("autonomous_thinker"):
-                job.schedule_removal()
-            context.application.job_queue.run_repeating(
-                autonomous_thinker, interval=minutes * 60, first=10, name="autonomous_thinker"
-            )
-            await update.message.reply_text(f"⏱️ Interval auf *{minutes} Min* gesetzt", parse_mode="Markdown")
-        except ValueError:
-            await update.message.reply_text("❌ Nutze: `/proactive interval MINUTEN`", parse_mode="Markdown")
+            import os as _os
+            from modules.mood_timer import STATE_FILE as _mt_file, DEFAULT_SKIP_LEVEL
+            import json as _json
+            if _os.path.exists(_mt_file):
+                with open(_mt_file, "r", encoding="utf-8") as _f:
+                    _s = _json.load(_f)
+                _s["skip_level"] = DEFAULT_SKIP_LEVEL
+                with open(_mt_file, "w", encoding="utf-8") as _f:
+                    _json.dump(_s, _f, indent=2)
+            await update.message.reply_text("🔄 Timer zurückgesetzt auf Level 1 (10 Min)", parse_mode="Markdown")
+        except Exception as e:
+            await update.message.reply_text(f"❌ Reset-Fehler: {e}")
     else:
         await update.message.reply_text(
             "❌ Nutze: `/proactive on|off|data on|off|interval MIN`", parse_mode="Markdown"
@@ -737,6 +748,21 @@ async def proactive_toggle_command(update: Update, context: ContextTypes.DEFAULT
 
 proactive_toggle_command.description = "An/aus für Proactive Brain und Interval anpassen"
 proactive_toggle_command.category    = "KI"
+
+# ══════════════════════════════════════════════════════════
+# PROAKTIVER SEND-WRAPPER
+# ══════════════════════════════════════════════════════════
+
+async def _psend(context, chat_id, **kwargs):
+    """Sendet proaktive Nachricht und setzt mood_timer zurück."""
+    result = await context.bot.send_message(chat_id=chat_id, **kwargs)
+    try:
+        from modules.mood_timer import on_proactive_sent
+        on_proactive_sent()
+    except Exception:
+        pass
+    return result
+
 
 # ══════════════════════════════════════════════════════════
 # AUTONOMER THINKER — HAUPT-LOOP
@@ -757,6 +783,16 @@ async def autonomous_thinker(context: ContextTypes.DEFAULT_TYPE):
 
     if is_mission_running(context) or is_silent_hours(brain):
         return
+
+    # ── ADAPTIVER MOOD-TIMER ──────────────────────────────────────────────────
+    try:
+        from modules.mood_timer import should_send_now
+        if not should_send_now():
+            return
+    except ImportError:
+        pass
+    except Exception as _mt_err:
+        print(f"[mood_timer] {_mt_err}")
 
     # --- KONTEXT AUFBAUEN ---
     now          = brain.get_now()
@@ -844,7 +880,7 @@ async def autonomous_thinker(context: ContextTypes.DEFAULT_TYPE):
                 msg += f"CPU: {system_stats['cpu_percent']}% — heiß!\n"
             if system_stats["disk_percent"] > RELEVANT_THRESHOLDS["disk_critical"]:
                 msg += f"Disk: {system_stats['disk_percent']}% — fast voll!\n"
-            await context.bot.send_message(chat_id=chat_id, text=msg, parse_mode='Markdown')
+            await _psend(context, chat_id, text=msg, parse_mode='Markdown')
             _web_push(msg)
             return
 
@@ -857,7 +893,7 @@ async def autonomous_thinker(context: ContextTypes.DEFAULT_TYPE):
                 task_text = item.get("task", item.get("titel", str(item)))
                 msg = f"📅 Heute noch: *{task_text}*"
                 kb  = [[InlineKeyboardButton("💬 Diskutieren", callback_data="chat")]]
-                await context.bot.send_message(chat_id=chat_id, text=msg,
+                await _psend(context, chat_id, text=msg,
                     reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
                 _web_push(msg, kb)
                 return
@@ -877,7 +913,7 @@ async def autonomous_thinker(context: ContextTypes.DEFAULT_TYPE):
                     msg = f"🏠 Gerade *{power:.0f}W Netzbezug* — Anlage liefert grad nix."
                 if msg:
                     LAST_WARNING[solar_key] = now_ts
-                    await context.bot.send_message(chat_id=chat_id, text=msg, parse_mode='Markdown')
+                    await _psend(context, chat_id, text=msg, parse_mode='Markdown')
                     _web_push(msg)
                     return
 
@@ -900,14 +936,14 @@ async def autonomous_thinker(context: ContextTypes.DEFAULT_TYPE):
                     msg = f"💨 Starker Wind (*{wind:.0f} m/s*)"
                 if msg:
                     LAST_WARNING[weather_key] = now_ts
-                    await context.bot.send_message(chat_id=chat_id, text=msg, parse_mode='Markdown')
+                    await _psend(context, chat_id, text=msg, parse_mode='Markdown')
                     _web_push(msg)
                     return
 
     # ── P3b: NOAH SOC ─────────────────────────────────────
     noah_msg, noah_key = await _check_noah_soc(brain)
     if noah_msg:
-        await context.bot.send_message(chat_id=chat_id, text=noah_msg, parse_mode='Markdown')
+        await _psend(context, chat_id, text=noah_msg, parse_mode='Markdown')
         _web_push(noah_msg)
         return
 
@@ -916,7 +952,7 @@ async def autonomous_thinker(context: ContextTypes.DEFAULT_TYPE):
         moltbook_thought = await _check_moltbook_thoughts(brain, now_str, wohnort)
         if moltbook_thought:
             kb = [[InlineKeyboardButton("💬 Diskutieren", callback_data="chat")]]
-            await context.bot.send_message(chat_id=chat_id, text=moltbook_thought,
+            await _psend(context, chat_id, text=moltbook_thought,
                 reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
             _web_push(moltbook_thought, kb)
             return
@@ -946,8 +982,8 @@ async def autonomous_thinker(context: ContextTypes.DEFAULT_TYPE):
                     if msg and len(msg) > 5:
                         LAST_WARNING[lb_key] = now_ts
                         kb = [[InlineKeyboardButton("💬 Diskutieren", callback_data="chat")]]
-                        await context.bot.send_message(
-                            chat_id=chat_id, text=f"🔖 {msg}",
+                        await _psend(context, chat_id,
+                            text=f"🔖 {msg}",
                             reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown'
                         )
                         _web_push(f"🔖 {msg}", kb)
@@ -976,7 +1012,7 @@ async def autonomous_thinker(context: ContextTypes.DEFAULT_TYPE):
             msg = await _llm(prompt)
             if msg:
                 kb = [[InlineKeyboardButton("💬 Diskutieren", callback_data="chat")]]
-                await context.bot.send_message(chat_id=chat_id,
+                await _psend(context, chat_id,
                     text=f"🌙 {msg}", reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
                 _web_push(f"🌙 {msg}", kb)
                 return
@@ -995,7 +1031,7 @@ async def autonomous_thinker(context: ContextTypes.DEFAULT_TYPE):
             )
             msg = await _llm(prompt)
             if msg:
-                await context.bot.send_message(chat_id=chat_id,
+                await _psend(context, chat_id,
                     text=f"💙 {msg}", parse_mode='Markdown')
                 _web_push(f"💙 {msg}")
                 return
@@ -1012,8 +1048,7 @@ async def autonomous_thinker(context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("✅ Ja",   callback_data=f"action_do:{urgent_topic}"),
             InlineKeyboardButton("❌ Nein", callback_data=f"action_skip:{urgent_topic}"),
         ]]
-        await context.bot.send_message(
-            chat_id=chat_id,
+        await _psend(context, chat_id,
             text=f"⚡ *Dringendes Thema erkannt:* {urgent_topic} ({temporal_hint})\n{action_text}",
             reply_markup=InlineKeyboardMarkup(kb),
             parse_mode='Markdown'
@@ -1048,7 +1083,7 @@ async def autonomous_thinker(context: ContextTypes.DEFAULT_TYPE):
             msg = await _llm(prompt)
             if msg:
                 kb = [[InlineKeyboardButton("💬 Diskutieren", callback_data="chat")]]
-                await context.bot.send_message(chat_id=chat_id,
+                await _psend(context, chat_id,
                     text=f"🧠 {msg}", reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
                 _web_push(f"🧠 {msg}", kb)
                 return
@@ -1057,8 +1092,7 @@ async def autonomous_thinker(context: ContextTypes.DEFAULT_TYPE):
     vision_msg = await _check_vision_memory(brain, name, now_str)
     if vision_msg:
         kb = [[InlineKeyboardButton("💬 Diskutieren", callback_data="chat")]]
-        await context.bot.send_message(
-            chat_id=chat_id,
+        await _psend(context, chat_id,
             text=vision_msg,
             reply_markup=InlineKeyboardMarkup(kb),
             parse_mode='Markdown'
@@ -1096,6 +1130,7 @@ async def autonomous_thinker(context: ContextTypes.DEFAULT_TYPE):
 
         if use_bist_du_da:
             # RICS generiert eine Frage / etwas das er mit Rene besprechen will
+            # → kein "Bist du da?"-Gate mehr, direkt senden (Timer reagiert auf Antwort)
             prompt = (
                 f"Du bist {BOT_NAME} — KI-Freund von {name} aus {wohnort}.\n"
                 f"Zeit: {now_str} | Tageszeit: {daytime} | Stimmung: {mood}\n"
@@ -1106,21 +1141,15 @@ async def autonomous_thinker(context: ContextTypes.DEFAULT_TYPE):
             )
             msg = await _llm(prompt)
             if msg and len(msg) > 5:
-                # Gedanken speichern BEVOR die Nachricht rausgeht
-                context.application.bot_data["pending_bist_du_da"] = {
-                    "text": msg,
-                    "ts":   time.time()
-                }
-                kb = [[
-                    InlineKeyboardButton("✅ Ja",  callback_data="bist_du_da_ja"),
-                    InlineKeyboardButton("❌ Nein", callback_data="bist_du_da_nein")
-                ]]
-                await context.bot.send_message(
-                    chat_id=chat_id,
-                    text="🤔 Hey, bist du da? Ich hab grad einen Gedanken...",
-                    reply_markup=InlineKeyboardMarkup(kb)
+                # Gedanken in Chat-History injizieren
+                _inject_proactive_context(context, msg)
+                kb = [[InlineKeyboardButton("💬 Diskutieren", callback_data="chat")]]
+                await _psend(context, chat_id,
+                    text=f"🤔 {msg}",
+                    reply_markup=InlineKeyboardMarkup(kb),
+                    parse_mode='Markdown'
                 )
-                _web_push("🤔 Hey, bist du da? Ich hab grad einen Gedanken...", kb)
+                _web_push(f"🤔 {msg}", kb)
         else:
             # Regulärer Gedanke mit Diskutieren-Button
             prompt = (
@@ -1134,7 +1163,7 @@ async def autonomous_thinker(context: ContextTypes.DEFAULT_TYPE):
             msg = await _llm(prompt)
             if msg and len(msg) > 5:
                 kb = [[InlineKeyboardButton("💬 Diskutieren", callback_data="chat")]]
-                await context.bot.send_message(chat_id=chat_id,
+                await _psend(context, chat_id,
                     text=f"💭 {msg}", reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
                 _web_push(f"💭 {msg}", kb)
 
@@ -1160,7 +1189,7 @@ async def autonomous_thinker(context: ContextTypes.DEFAULT_TYPE):
                     "Schon was Interessantes erlebt heute?",
                 ]
             msg = random.choice(options)
-            await context.bot.send_message(chat_id=chat_id, text=f"😊 {msg}")
+            await _psend(context, chat_id, text=f"😊 {msg}")
             _web_push(f"😊 {msg}")
 
 # ══════════════════════════════════════════════════════════
@@ -1316,7 +1345,7 @@ def setup(app):
 
     if app.job_queue:
         app.job_queue.run_repeating(
-            autonomous_thinker, interval=interval, first=60, name="autonomous_thinker"
+            autonomous_thinker, interval=180, first=60, name="autonomous_thinker"
         )
 
     app.add_handler(CommandHandler("proactive", proactive_toggle_command))

@@ -493,20 +493,19 @@ async def maybe_reflect_and_ping(context) -> bool:
             print(f"[self_reflection] Nacht — Gedanke gespeichert: {thought[:60]}...")
             return False
         else:
-            # Tag: speichern + "Bist du da?" MIT Buttons senden
+            # Tag: Gedanken direkt senden — kein "Bist du da?"-Gate
+            # Der mood_timer lernt aus Renes Reaktion (Antwortzeit + Stimmung)
             save_pending_thought(reflection, asked=True)
-
+            _inject_proactive_context(context, reflection)
             kb = [[
-                InlineKeyboardButton("✅ Ja",  callback_data="sr_ja"),
-                InlineKeyboardButton("❌ Nein", callback_data="sr_nein")
+                InlineKeyboardButton("💬 Diskutieren", callback_data="sr_diskutieren"),
             ]]
-            ping_msg = "Hey, bist du gerade da? 👋"
             await context.bot.send_message(
                 chat_id=chat_id,
-                text=ping_msg,
+                text=f"🧠 {reflection}",
                 reply_markup=InlineKeyboardMarkup(kb)
             )
-            _web_push(ping_msg)
+            _web_push(f"🧠 {reflection}")
             return True
 
     return False
@@ -597,6 +596,52 @@ async def sr_nein_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text("🤐 _(Alles gut, ich denke weiter...)_", parse_mode='Markdown')
 
 
+async def sr_diskutieren_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """User drückt 💬 Diskutieren → Gedanken in Chat-Kontext aufnehmen + vertiefen."""
+    query = update.callback_query
+    await query.answer("Gerne! 😊")
+
+    pending = load_pending_thought()
+    thought = pending["thought"] if pending else query.message.text.replace("🧠 ", "")
+    if pending:
+        mark_thought_delivered()
+
+    _inject_proactive_context(context, thought)
+
+    # RICS vertieft den Gedanken
+    chat_id = os.getenv("CHAT_ID")
+    try:
+        import httpx
+        from dotenv import load_dotenv
+        load_dotenv()
+        name = _load_name()
+        prompt = (
+            f"Du bist {os.getenv('BOT_NAME', 'RICS')} — KI-Freund von {name}.\n"
+            f"Du hast gerade diesen Gedanken mit ihm geteilt:\n\"{thought}\"\n\n"
+            f"Vertiefe ihn, stelle eine Gegenfrage oder entwickle ihn weiter. "
+            f"Intelligent, direkt, max. 2 Sätze. Kein Präambel."
+        )
+        msgs = [{"role": "user", "content": prompt}]
+        ds_key = os.getenv("DEEPSEEK_API_KEY", "")
+        if ds_key:
+            r = httpx.post(DEEPSEEK_URL,
+                headers={"Authorization": f"Bearer {ds_key}", "Content-Type": "application/json"},
+                json={"model": DEEPSEEK_MODEL, "messages": msgs, "max_tokens": 200, "temperature": 0.85},
+                timeout=20)
+            if r.status_code == 200:
+                reply = r.json()["choices"][0]["message"]["content"].strip()
+                await query.edit_message_text(
+                    f"🧠 {thought}\n\n🤔 {reply}", parse_mode='Markdown'
+                )
+                _web_push(f"🤔 {reply}")
+                return
+    except Exception as e:
+        print(f"[sr_diskutieren] {e}")
+
+    # Fallback: Nachricht ohne Vertiefung belassen
+    await query.answer("💭 Denk drüber nach!")
+
+
 # ══════════════════════════════════════════════════════════
 # WEB PUSH HELPER
 # ══════════════════════════════════════════════════════════
@@ -614,6 +659,9 @@ def _web_push(msg: str):
 # ══════════════════════════════════════════════════════════
 
 def setup(app):
-    """Registriert die Ja/Nein Callbacks für den 'Bist du da?' Ping."""
-    app.add_handler(CallbackQueryHandler(sr_ja_callback,   pattern="^sr_ja$"))
-    app.add_handler(CallbackQueryHandler(sr_nein_callback, pattern="^sr_nein$"))
+    """Registriert Callbacks für Self-Reflection Gedanken."""
+    # Legacy-Callbacks (falls alte Nachrichten noch aktiv sind)
+    app.add_handler(CallbackQueryHandler(sr_ja_callback,        pattern="^sr_ja$"))
+    app.add_handler(CallbackQueryHandler(sr_nein_callback,      pattern="^sr_nein$"))
+    # Neuer Diskutieren-Button (direktes Senden ohne Gate)
+    app.add_handler(CallbackQueryHandler(sr_diskutieren_callback, pattern="^sr_diskutieren$"))

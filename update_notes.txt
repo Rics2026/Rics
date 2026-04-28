@@ -1,7 +1,5 @@
-Update 3.0
-- web_orchestrator.py
-  - neue Web Registerkarte Lab.
-  - ganzes Labot wo du mit deinem Bot selbst Module und Programme erzeugen kannst
-- lernmodul.py
-  - der Bot lernt anahnd seiner intressen selbst durch artikel aus dem Netz.
-  - per Cronjob
+Update 3.1
+- proactive_brain.py
+  - Analysiert den chat und bestimmt deine Laune
+  - Stellt je nach Laune seinen Active Timer zwischen 3 - 120 Minuten
+

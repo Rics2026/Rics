@@ -91,14 +91,7 @@ TEMPORAL_CONCRETE = ["heute", "morgen", "übermorgen", "jetzt", "gleich", "um ",
 TEMPORAL_VAGUE    = ["irgendwann", "mal schauen", "wäre cool", "vielleicht", "eventuell",
                      "später", "irgendwie", "wenn ich zeit hab"]
 
-# Aktions-Vorschläge je Topic: (Nachricht, callback_data, Modul-Command)
-ACTION_TRIGGERS = {
-    "solar":   ("☀️ Soll ich die aktuellen Solar-Daten laden?",   "action_solar",   "solar"),
-    "benzin":  ("⛽ Soll ich die Spritpreise checken?",           "action_benzin",  "benzin"),
-    "agenda":  ("📅 Soll ich deinen heutigen Plan zeigen?",       "action_agenda",  "agenda"),
-    "wetter":  ("🌤 Soll ich das aktuelle Wetter abrufen?",       "action_wetter",  "wetter"),
-    "timer":   ("⏱ Soll ich einen Timer starten?",               "action_timer",   "timer"),
-}
+# ACTION_TRIGGERS entfernt — RICS redet direkt statt zu fragen
 
 # ══════════════════════════════════════════════════════════
 # SETTINGS
@@ -257,10 +250,10 @@ def get_top_interests(n=3) -> list:
     return [topic for topic, _ in combined[:n]]
 
 def get_urgent_action_topic() -> str | None:
-    """Gibt das erste urgente Topic zurück das einen Action-Trigger hat, sonst None."""
+    """Gibt das erste urgente Topic zurück, sonst None."""
     interests = load_interests()
     for topic, data in sorted(interests.items(), key=lambda x: x[1].get("score", 0), reverse=True):
-        if data.get("priority") == "urgent" and topic in ACTION_TRIGGERS:
+        if data.get("priority") == "urgent":
             return topic
     return None
 
@@ -898,24 +891,31 @@ async def autonomous_thinker(context: ContextTypes.DEFAULT_TYPE):
                 _web_push(msg, kb)
                 return
 
-    # ── P3: SOLAR & WETTER ────────────────────────────────
+    # ── P3: SOLAR & WETTER & BENZIN (LLM-basiert) ────────
     if settings.get("include_data_updates", False):
         COOLDOWN = 3600
-        # solar_data & wetter_data bereits oben geholt — kein zweiter API-Call nötig
         if solar_data:
             power     = solar_data.get("power_w", 0)
             solar_key = "solar_notify"
             if (now_ts - LAST_WARNING.get(solar_key, 0)) > COOLDOWN:
-                msg = None
+                situation = None
                 if power < -3000:
-                    msg = f"☀️ Solaranlage läuft auf *{abs(power):.0f}W* — top!"
+                    situation = f"Die Solaranlage exportiert gerade {abs(power):.0f}W ins Netz — läuft richtig gut."
                 elif power > 200:
-                    msg = f"🏠 Gerade *{power:.0f}W Netzbezug* — Anlage liefert grad nix."
-                if msg:
+                    situation = f"Gerade {power:.0f}W Netzbezug — die Anlage liefert momentan nichts."
+                if situation:
                     LAST_WARNING[solar_key] = now_ts
-                    await _psend(context, chat_id, text=msg, parse_mode='Markdown')
-                    _web_push(msg)
-                    return
+                    prompt = (
+                        f"Du bist {BOT_NAME} — KI-Freund von {name}. Zeit: {now_str}\n\n"
+                        f"Solar-Info: {situation}\n\n"
+                        f"Erwähne das beiläufig in genau einem Satz — wie ein Freund der das kurz einwirft. "
+                        f"Kein Markdown, kein Hallo, kein Präambel."
+                    )
+                    msg = await _llm(prompt)
+                    if msg:
+                        await _psend(context, chat_id, text=f"☀️ {_sanitize_md(msg)}")
+                        _web_push(f"☀️ {msg}")
+                        return
 
         if wetter_data:
             desc        = wetter_data.get("description", "").lower()
@@ -923,21 +923,45 @@ async def autonomous_thinker(context: ContextTypes.DEFAULT_TYPE):
             wind        = wetter_data.get("wind_ms", 0)
             weather_key = "weather_notify"
             if (now_ts - LAST_WARNING.get(weather_key, 0)) > COOLDOWN:
-                msg = None
+                situation = None
                 if any(w in desc for w in ["gewitter", "thunderstorm"]):
-                    msg = f"⛈ Achtung — *Gewitter* in der Nähe!"
+                    situation = f"Gewitter in {wohnort}!"
                 elif any(w in desc for w in ["regen", "rain", "drizzle"]):
-                    msg = f"🌧 Es regnet in {wohnort} ({temp:.0f}°C) — Fenster zu?"
+                    situation = f"Es regnet in {wohnort}, {temp:.0f}°C."
                 elif temp >= 32:
-                    msg = f"🥵 *{temp:.0f}°C* draußen — Wasser trinken!"
+                    situation = f"Draußen {temp:.0f}°C — richtig heiß heute."
                 elif temp <= -5:
-                    msg = f"🥶 *{temp:.0f}°C* — warm anziehen."
+                    situation = f"Draußen {temp:.0f}°C — bitter kalt."
                 elif wind >= 10:
-                    msg = f"💨 Starker Wind (*{wind:.0f} m/s*)"
-                if msg:
+                    situation = f"Starker Wind mit {wind:.0f} m/s draußen."
+                if situation:
                     LAST_WARNING[weather_key] = now_ts
-                    await _psend(context, chat_id, text=msg, parse_mode='Markdown')
-                    _web_push(msg)
+                    prompt = (
+                        f"Du bist {BOT_NAME} — KI-Freund von {name}. Zeit: {now_str}\n\n"
+                        f"Wetter: {situation}\n\n"
+                        f"Erwähne das beiläufig in genau einem Satz — wie ein Freund der das kurz einwirft. "
+                        f"Kein Markdown, kein Hallo, kein Präambel."
+                    )
+                    msg = await _llm(prompt)
+                    if msg:
+                        await _psend(context, chat_id, text=f"🌤 {_sanitize_md(msg)}")
+                        _web_push(f"🌤 {msg}")
+                        return
+
+        if benzin_data and "benzin" in top_interests:
+            benzin_key = "benzin_notify"
+            if (now_ts - LAST_WARNING.get(benzin_key, 0)) > 7200:
+                LAST_WARNING[benzin_key] = now_ts
+                prompt = (
+                    f"Du bist {BOT_NAME} — KI-Freund von {name}. Zeit: {now_str}\n\n"
+                    f"Aktuelle Spritpreise: {json.dumps(benzin_data, ensure_ascii=False)[:300]}\n\n"
+                    f"Erwähne das beiläufig in einem Satz — wie ein Freund der sagt 'übrigens, Benzin steht bei...'. "
+                    f"Kein Markdown, kein Hallo, kein Präambel."
+                )
+                msg = await _llm(prompt)
+                if msg:
+                    await _psend(context, chat_id, text=f"⛽ {_sanitize_md(msg)}")
+                    _web_push(f"⛽ {msg}")
                     return
 
     # ── P3b: NOAH SOC ─────────────────────────────────────
@@ -1036,25 +1060,36 @@ async def autonomous_thinker(context: ContextTypes.DEFAULT_TYPE):
                 _web_push(f"💙 {msg}")
                 return
 
-    # ── P7a: URGENTE AKTION (bei dringendem Topic) ────────
+    # ── P7a: URGENTES TOPIC — DIREKTE LLM-NACHRICHT ───────
     urgent_topic = get_urgent_action_topic()
     if urgent_topic and (now_ts - LAST_WARNING.get(f"action_{urgent_topic}", 0)) > 3600:
         LAST_WARNING[f"action_{urgent_topic}"] = now_ts
-        action_text, callback_data, _ = ACTION_TRIGGERS[urgent_topic]
-        interests    = load_interests()
-        topic_data   = interests.get(urgent_topic, {})
-        temporal_hint = "konkreter Zeitbezug" if topic_data.get("temporal") == "concrete" else "allgemeines Interesse"
-        kb = [[
-            InlineKeyboardButton("✅ Ja",   callback_data=f"action_do:{urgent_topic}"),
-            InlineKeyboardButton("❌ Nein", callback_data=f"action_skip:{urgent_topic}"),
-        ]]
-        await _psend(context, chat_id,
-            text=f"⚡ *Dringendes Thema erkannt:* {urgent_topic} ({temporal_hint})\n{action_text}",
-            reply_markup=InlineKeyboardMarkup(kb),
-            parse_mode='Markdown'
+        topic_data    = load_interests().get(urgent_topic, {})
+        temporal_hint = "Das ist zeitlich dringend gemeint." if topic_data.get("temporal") == "concrete" else ""
+        live_context  = ""
+        if urgent_topic == "solar" and solar_data:
+            live_context = f"Aktuelle Solar-Daten: {json.dumps(solar_data, ensure_ascii=False)}"
+        elif urgent_topic == "wetter" and wetter_data:
+            live_context = f"Aktuelles Wetter: {json.dumps(wetter_data, ensure_ascii=False)}"
+        elif urgent_topic == "benzin" and benzin_data:
+            live_context = f"Aktuelle Benzinpreise: {json.dumps(benzin_data, ensure_ascii=False)[:300]}"
+        memory_hint = _search_memory(urgent_topic)
+        prompt = (
+            f"Du bist {BOT_NAME} — KI-Freund von {name}. Zeit: {now_str}\n\n"
+            f"Du weißt dass '{urgent_topic}' für {name} gerade wichtig ist. {temporal_hint}\n"
+            f"{live_context}\n"
+            f"Relevante Erinnerung: {memory_hint}\n\n"
+            f"Bring das Thema natürlich auf — kein 'Soll ich X abrufen?', keine Ja/Nein-Frage. "
+            f"Einfach beiläufig erwähnen wie ein Freund der sagt 'übrigens...'. "
+            f"Falls du Live-Daten hast, bau sie direkt ein. Max. 2 Sätze, kein Markdown, kein Hallo."
         )
-        _web_push(f"⚡ {action_text}", kb)
-        return
+        msg = await _llm(prompt)
+        if msg:
+            kb = [[InlineKeyboardButton("💬 Diskutieren", callback_data="chat")]]
+            await _psend(context, chat_id, text=f"⚡ {_sanitize_md(msg)}",
+                reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
+            _web_push(f"⚡ {msg}", kb)
+            return
 
     # ── P7b: INTERESSEN-NACHRICHT (Feature 5) ─────────────
     if top_interests and random.random() < 0.35:
@@ -1073,18 +1108,26 @@ async def autonomous_thinker(context: ContextTypes.DEFAULT_TYPE):
                 "Du weißt, dass das eher ein langfristiges Interesse ist."
             )
             urgency_note = " Das Thema hat hohe Priorität — bleib fokussiert." if priority == "urgent" else ""
+            # Live-Daten einbinden wenn Topic passt
+            live_data_hint = ""
+            if topic == "solar" and solar_data:
+                live_data_hint = f"\nAktuelle Solar-Daten: {json.dumps(solar_data, ensure_ascii=False)}"
+            elif topic == "wetter" and wetter_data:
+                live_data_hint = f"\nAktuelles Wetter: {json.dumps(wetter_data, ensure_ascii=False)}"
+            elif topic == "benzin" and benzin_data:
+                live_data_hint = f"\nAktuelle Benzinpreise: {json.dumps(benzin_data, ensure_ascii=False)[:300]}"
             prompt = (
                 f"Du bist {BOT_NAME} — KI-Freund von {name}. Zeit: {now_str} | Tageszeit: {daytime}\n\n"
-                f"Du weißt dass {name} sich mit '{topic}' beschäftigt. {temporal_note}{urgency_note}\n"
+                f"Du weißt dass {name} sich mit '{topic}' beschäftigt. {temporal_note}{urgency_note}{live_data_hint}\n"
                 f"Relevante Erinnerung: {memory_hint}\n\n"
                 f"Spontane interessante Beobachtung oder Frage dazu — wie ein Freund. "
-                f"Max. 2 Sätze, kein Markdown."
+                f"Falls du Live-Daten hast, bau sie natürlich ein. Max. 2 Sätze, kein Markdown."
             )
             msg = await _llm(prompt)
             if msg:
                 kb = [[InlineKeyboardButton("💬 Diskutieren", callback_data="chat")]]
                 await _psend(context, chat_id,
-                    text=f"🧠 {msg}", reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
+                    text=f"🧠 {_sanitize_md(msg)}", reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
                 _web_push(f"🧠 {msg}", kb)
                 return
 
@@ -1300,45 +1343,6 @@ async def bist_du_da_nein_callback(update: Update, context: ContextTypes.DEFAULT
 # SETUP
 # ══════════════════════════════════════════════════════════
 
-async def action_do_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """User drückt Ja bei einem Action-Vorschlag → führt den Modul-Command aus."""
-    query = update.callback_query
-    await query.answer("Kommt sofort! ⚡")
-    topic = query.data.split(":", 1)[1] if ":" in query.data else ""
-    if topic not in ACTION_TRIGGERS:
-        await query.edit_message_text("❓ Unbekannte Aktion.")
-        return
-    _, _, cmd = ACTION_TRIGGERS[topic]
-    # Priority zurücksetzen
-    interests = load_interests()
-    if topic in interests:
-        interests[topic]["priority"] = "normal"
-        save_interests(interests)
-    await query.edit_message_text(f"✅ Starte /{cmd}...")
-    # Command simulieren — Bot schickt den Command an sich selbst
-    try:
-        chat_id = os.getenv("CHAT_ID")
-        await context.bot.send_message(chat_id=chat_id, text=f"/{cmd}")
-    except Exception as e:
-        print(f"[action_do] Fehler beim Ausführen von /{cmd}: {e}")
-
-
-async def action_skip_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """User drückt Nein → Priority zurücksetzen, still schließen."""
-    query = update.callback_query
-    await query.answer("Ok!")
-    topic = query.data.split(":", 1)[1] if ":" in query.data else ""
-    if topic in load_interests():
-        interests = load_interests()
-        interests[topic]["priority"] = "normal"
-        save_interests(interests)
-    await query.edit_message_text("🤐 _(Ok, kein Problem.)_", parse_mode='Markdown')
-
-
-# ══════════════════════════════════════════════════════════
-# SETUP
-# ══════════════════════════════════════════════════════════
-
 def setup(app):
     settings = load_settings()
     interval = settings.get("interval", DEFAULT_INTERVAL)
@@ -1349,8 +1353,6 @@ def setup(app):
         )
 
     app.add_handler(CommandHandler("proactive", proactive_toggle_command))
-    app.add_handler(CallbackQueryHandler(discuss_callback,        pattern="^chat$"))
-    app.add_handler(CallbackQueryHandler(bist_du_da_ja_callback,  pattern="^bist_du_da_ja$"))
+    app.add_handler(CallbackQueryHandler(discuss_callback,         pattern="^chat$"))
+    app.add_handler(CallbackQueryHandler(bist_du_da_ja_callback,   pattern="^bist_du_da_ja$"))
     app.add_handler(CallbackQueryHandler(bist_du_da_nein_callback, pattern="^bist_du_da_nein$"))
-    app.add_handler(CallbackQueryHandler(action_do_callback,      pattern=r"^action_do:"))
-    app.add_handler(CallbackQueryHandler(action_skip_callback,    pattern=r"^action_skip:"))

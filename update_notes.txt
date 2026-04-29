@@ -1,5 +1,8 @@
-Update 3.1
+Update 3.2
 - proactive_brain.py
   - Analysiert den chat und bestimmt deine Laune
   - Stellt je nach Laune seinen Active Timer zwischen 3 - 120 Minuten
 
+- system_prompt.txt
+- hotline.py Event System für Brain 
+- 

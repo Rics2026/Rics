@@ -1,5 +1,7 @@
-Version 3.1
+Version 3.2
 bot.py
 modules/proactive_brain.py
-modules/self_reflection.py
-modules/mood_timer.py
+modules/hotline.py
+modules/youtube.py
+modules/funktions_scan.py
+core/system_prompt.txt

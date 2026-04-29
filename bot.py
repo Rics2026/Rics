@@ -1051,12 +1051,20 @@ Nur JSON:"""
             pass
         # ────────────────────────────────────────────────────────
 
+        # ── Capabilities (RICS kennt seine eigenen Funktionen) ───
+        capabilities_section = ""
+        try:
+            from modules.funktions_scan import get_capabilities_context as _gc
+            capabilities_section = f"\n{_gc(context.application)}"
+        except Exception:
+            pass
+
         system_msg = f"""{self.system_prompt}
 
 ━━━ AKTUELLE ZEIT: {now_str} ━━━
 (Diese Zeit ist verbindlich — verwende sie für alle zeitbezogenen Aussagen.)
 
-{personal_text}{brain_section}{memory_section}{brain_file_section}{discord_section}{energie_section}{web_wissen_section}{ki_server_section}"""
+{personal_text}{brain_section}{memory_section}{brain_file_section}{discord_section}{energie_section}{web_wissen_section}{ki_server_section}{capabilities_section}"""
 
         msgs = (
             [{"role": "system", "content": system_msg}]

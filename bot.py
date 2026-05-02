@@ -1214,16 +1214,60 @@ reset_wrapper.category    = "Gedächtnis"
 
 async def reflexion_wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
     jarvis: Jarvis = context.application.bot_data["jarvis"]
-    today    = jarvis.get_now().strftime("%Y-%m-%d")
-    log_file = os.path.join(LOG_DIR, f"{today}.log")
-    if not os.path.exists(log_file): return await update.message.reply_text("Keine Logs heute.")
-    with open(log_file, "r", encoding="utf-8") as f: lines = f.read().splitlines()
-    added = 0
-    for line in lines:
-        if line.startswith("USER:"):
-            jarvis.memory.add_user(line.replace("USER: ", ""))
-            added += 1
-    await update.message.reply_text(f"✅ {added} Einträge gelernt.")
+    now = jarvis.get_now()
+
+    # ── BOT-Zeilen die als Ereignis relevant sind ────────────────────
+    # Schlüsselwörter im BOT:-Prefix die wir als Fakten festhalten
+    BOT_EVENT_KEYWORDS = [
+        "druck", "🖨️", "drucker",                      # 3D-Druck
+        "modul", "installiert", "module_installed",     # Orchestrator
+        "solar", "noah", "soc", "einspeisung",          # Energie
+        "backup", "update", "neustart",                 # System
+        "vision", "bild erkannt",                       # Vision
+        "moltbook",                                     # Moltbook
+    ]
+
+    stats = {"user": 0, "events": 0, "days": 0}
+
+    # ── Letzte 2 Tage lesen (heute + gestern) ───────────────────────
+    for days_ago in (1, 0):
+        date_str = (now - timedelta(days=days_ago)).strftime("%Y-%m-%d")
+        log_file = os.path.join(LOG_DIR, f"{date_str}.log")
+        if not os.path.exists(log_file):
+            continue
+        stats["days"] += 1
+
+        with open(log_file, "r", encoding="utf-8") as f:
+            lines = f.read().splitlines()
+
+        for line in lines:
+            stripped = line.strip()
+            if not stripped:
+                continue
+
+            # USER-Nachrichten → direkt als Nutzer-Memory
+            if stripped.startswith("USER:") or stripped.startswith("[WEB] USER:"):
+                text = stripped.split("USER:", 1)[-1].strip()
+                if len(text) > 10:
+                    jarvis.memory.add_user(f"[{date_str}] {text}")
+                    stats["user"] += 1
+
+            # BOT-Zeilen mit relevanten Ereignissen → als Fakt speichern
+            elif stripped.startswith("BOT:") or re.match(r"^\[.+\] BOT:", stripped):
+                bot_text = stripped.split("BOT:", 1)[-1].strip()
+                lower = bot_text.lower()
+                if any(kw in lower for kw in BOT_EVENT_KEYWORDS):
+                    jarvis.memory.add_fact(f"EREIGNIS [{date_str}]: {bot_text[:300]}")
+                    stats["events"] += 1
+
+    if stats["days"] == 0:
+        return await update.message.reply_text("Keine Logs gefunden (heute/gestern).")
+
+    await update.message.reply_text(
+        f"✅ Reflexion abgeschlossen ({stats['days']} Tag/e):\n"
+        f"  💬 {stats['user']} Nutzer-Nachrichten → Gedächtnis\n"
+        f"  📌 {stats['events']} Bot-Ereignisse → Fakten"
+    )
 
 reflexion_wrapper.description = "Überträgt Tages-Logs ins Langzeitgedächtnis"
 reflexion_wrapper.category    = "Gedächtnis"

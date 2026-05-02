@@ -161,6 +161,7 @@ class Brain:
             "benzin":        ["benzin", "sprit", "tanken", "diesel", "e5", "e10", "kraftstoff"],
             "mood":          ["stimmung", "mood", "laune"],
             "top_interests": ["interessen", "interesse", "topics"],
+            "DRUCKER":       ["drucker", "druck", "3d", "vyper", "anycubic", "filament", "druckzeit", "druckstart"],
             "data":          [
                 "ram", "cpu", "disk", "speicher", "prozessor",
                 "system", "status", "uptime", "auslastung", "ressourcen",
@@ -198,6 +199,13 @@ class Brain:
                     candidates.append(f"{matched_field} ({ts_str}): {summary}")
                 else:
                     candidates.append(f"{matched_field} ({ts_str}): {val}")
+
+            # Type-basierte Einträge (z.B. DRUCKER mit event + data)
+            elif matched_field and entry.get("type") == matched_field:
+                event   = entry.get("event", "")
+                data_d  = entry.get("data", {})
+                summary = ", ".join(f"{k}: {v}" for k, v in data_d.items())
+                candidates.append(f"Drucker {event} ({ts_str}): {summary}")
 
             # System-Daten (data-Dict) — bei matched_field="data" ODER keinem Match
             elif matched_field == "data" or not matched_field:

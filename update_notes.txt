@@ -1,7 +1,3 @@
-Update 3.2
-- proactive_brain.py
-  - Analysiert den chat und bestimmt deine Laune
-  - Stellt je nach Laune seinen Active Timer zwischen 3 - 120 Minuten
-- funktions_scan.py Kennt jetzt seine Funktionen noch besser.
-- system_prompt.txt
-- system_prompt - agiert besser mit datum und uhrzeit
+Update 3.3
+- brain.py - fix
+- bot.py   - fix

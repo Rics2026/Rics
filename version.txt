@@ -1,6 +1,3 @@
-Version 3.2
+Version 3.3
 bot.py
-modules/proactive_brain.py
-modules/youtube.py
-modules/funktions_scan.py
-core/system_prompt.txt
+core/brain.py

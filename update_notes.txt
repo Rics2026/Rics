@@ -1,3 +1,4 @@
-Update 3.3
-- brain.py - fix
+Update 3.4
 - bot.py   - fix
+- proactive_brain und solar nutzen neue Logik
+-memory_viewer.py - /memory_cleanup reinigt jetzt auch Persomal.json (/ichnbin)

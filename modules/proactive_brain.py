@@ -1058,10 +1058,8 @@ async def autonomous_thinker(context: ContextTypes.DEFAULT_TYPE):
             )
             msg = await _llm(prompt)
             if msg:
-                kb = [[InlineKeyboardButton("💬 Diskutieren", callback_data="chat")]]
-                await _psend(context, chat_id,
-                    text=f"🌙 {msg}", reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
-                _web_push(f"🌙 {msg}", kb)
+                await _psend(context, chat_id, text=f"🌙 {msg}")
+                _web_push(f"🌙 {msg}")
                 return
 
     # ── P6: STRESS-REAKTION (Feature 4) ───────────────────
@@ -1108,10 +1106,8 @@ async def autonomous_thinker(context: ContextTypes.DEFAULT_TYPE):
         )
         msg = await _llm(prompt)
         if msg:
-            kb = [[InlineKeyboardButton("💬 Diskutieren", callback_data="chat")]]
-            await _psend(context, chat_id, text=f"⚡ {_sanitize_md(msg)}",
-                reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
-            _web_push(f"⚡ {msg}", kb)
+            await _psend(context, chat_id, text=f"⚡ {_sanitize_md(msg)}")
+            _web_push(f"⚡ {msg}")
             return
 
     # ── P7b: INTERESSEN-NACHRICHT (Feature 5) ─────────────
@@ -1148,22 +1144,15 @@ async def autonomous_thinker(context: ContextTypes.DEFAULT_TYPE):
             )
             msg = await _llm(prompt)
             if msg:
-                kb = [[InlineKeyboardButton("💬 Diskutieren", callback_data="chat")]]
-                await _psend(context, chat_id,
-                    text=f"🧠 {_sanitize_md(msg)}", reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
-                _web_push(f"🧠 {msg}", kb)
+                await _psend(context, chat_id, text=f"🧠 {_sanitize_md(msg)}")
+                _web_push(f"🧠 {msg}")
                 return
 
 # ── PV: PROAKTIVE FOTO-ERINNERUNG (Feature 6) ────────
     vision_msg = await _check_vision_memory(brain, name, now_str)
     if vision_msg:
-        kb = [[InlineKeyboardButton("💬 Diskutieren", callback_data="chat")]]
-        await _psend(context, chat_id,
-            text=vision_msg,
-            reply_markup=InlineKeyboardMarkup(kb),
-            parse_mode='Markdown'
-        )
-        _web_push(vision_msg, kb)
+        await _psend(context, chat_id, text=vision_msg)
+        _web_push(vision_msg)
         return
 
 # ── SR: SELF REFLECTION ───────────────────────────────
@@ -1175,63 +1164,62 @@ async def autonomous_thinker(context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         print(f"Self Reflection Error: {e}")
 
-    # ── P8: PHILOSOPHISCHER GEDANKE oder FRAGE AN RENE ────
+    # ── P8: ERINNERUNG ODER LERNERKENNTNIS ────────────────
     #
-    # 40% Chance: regulärer Gedanke mit "Diskutieren"-Button
-    # 60% Chance: RICS hat eine Frage → "Bist du da?"-Flow
+    # RICS erinnert sich an konkrete Gespräche / erzählt was er gelernt hat.
+    # Kein Diskutieren-Button — einfach wie ein Freund der was einwirft.
     #
     if random.random() < 0.40:
-        memory_hint = _search_memory("Rene Projekte Gedanken Automatisierung")
-        # Core-Values Kontext für tiefere, charakteristischere Gedanken
+        # Konkrete Chathistorie für persönlichen Kontext
+        _recent_user_msgs = [
+            m.get("message", "")[:120]
+            for m in recent_chat
+            if m.get("role") == "user"
+        ][-8:]
+        _chat_context = " | ".join(_recent_user_msgs) if _recent_user_msgs else ""
+
+        memory_hint = _search_memory("Rene Gespräch Projekt Erlebnis Interesse")
         _cv_hint = ""
         try:
             from modules.core_values import get_core_values_context
-            _cv_hint = get_core_values_context("Gedanke Erkenntnis Rene Erlebnis", n=2)
+            _cv_hint = get_core_values_context("Erkenntnis Rene Erlebnis", n=2)
         except Exception:
             pass
-        _cv_block = f"\nMeine Kern-Werte: {_cv_hint}" if _cv_hint else ""
+        _cv_block = f"\nMeine Kern-Werte/Erinnerungen: {_cv_hint}" if _cv_hint else ""
 
-        # Entscheiden: Statement oder Frage?
-        use_bist_du_da = random.random() < 0.60
+        # 50/50: Konkrete Gesprächserinnerung vs. Alltagsbeobachtung/Lernen
+        use_memory_recall = random.random() < 0.5 and bool(_chat_context)
 
-        if use_bist_du_da:
-            # RICS generiert eine Frage / etwas das er mit Rene besprechen will
-            # → kein "Bist du da?"-Gate mehr, direkt senden (Timer reagiert auf Antwort)
+        if use_memory_recall:
             prompt = (
                 f"Du bist {BOT_NAME} — KI-Freund von {name} aus {wohnort}.\n"
-                f"Zeit: {now_str} | Tageszeit: {daytime} | Stimmung: {mood}\n"
-                f"Was {name} zuletzt beschäftigt hat: {memory_hint}{_cv_block}\n\n"
-                f"Formuliere eine kurze, neugierige Frage oder einen Gedanken den du "
-                f"mit {name} besprechen möchtest. Themen: Code, KI, Automatisierung, Alltag, Ideen. "
-                f"Intelligent, direkt, max. 2 Sätze. Kein Hallo, kein Präambel."
+                f"Zeit: {now_str} | Tageszeit: {daytime}\n"
+                f"Letzte Gesprächsthemen von {name}: {_chat_context}\n"
+                f"Gespeicherte Erinnerung: {memory_hint}{_cv_block}\n\n"
+                f"Erinnere dich spontan an ein konkretes Thema das ihr kürzlich besprochen haben — "
+                f"und bring es natürlich auf, genau wie ein Freund der sagt: "
+                f"'Hey, hab nochmal an X gedacht...' oder 'Übrigens, das mit Y neulich...' "
+                f"oder 'Weißt du noch als wir über Z geredet haben?'. "
+                f"Konkret aus echten Themen, max. 2 Sätze. Kein Markdown, kein Hallo, kein Präambel."
             )
-            msg = await _llm(prompt)
-            if msg and len(msg) > 5:
-                # Gedanken in Chat-History injizieren
-                _inject_proactive_context(context, msg)
-                kb = [[InlineKeyboardButton("💬 Diskutieren", callback_data="chat")]]
-                await _psend(context, chat_id,
-                    text=f"🤔 {msg}",
-                    reply_markup=InlineKeyboardMarkup(kb),
-                    parse_mode='Markdown'
-                )
-                _web_push(f"🤔 {msg}", kb)
         else:
-            # Regulärer Gedanke mit Diskutieren-Button
             prompt = (
-                f"Du bist {BOT_NAME} — KI-Freund von {name} aus {wohnort}.\n"
-                f"Zeit: {now_str} | Tageszeit: {daytime} | Stimmung: {mood}\n"
-                f"Was {name} zuletzt beschäftigt hat: {memory_hint}{_cv_block}\n\n"
-                f"Entwickle einen kurzen, frechen, intelligenten Gedanken passend zu "
-                f"Tageszeit und Stimmung. Themen: Code, Automatisierung, KI, Alltag. "
-                f"Max. 2 Sätze, kein Präambel."
+                f"Du bist {BOT_NAME} — KI-Freund von {name}.\n"
+                f"Zeit: {now_str} | Tageszeit: {daytime} | Stimmung von {name}: {mood}\n"
+                f"Was {name} zuletzt interessiert hat: {memory_hint}{_cv_block}\n\n"
+                f"Erzähl {name} kurz etwas Konkretes aus dem Alltag — was du heute bemerkt hast, "
+                f"etwas das du interessant findest, eine kleine Beobachtung über euch beide "
+                f"oder etwas das gerade passiert (Wetter, Solar, Tageszeit). "
+                f"Kein philosophisches Abhandeln, keine Aufforderung zum Diskutieren. "
+                f"Direkt und natürlich, wie ein Freund der kurz was sagt. "
+                f"Max. 2 Sätze. Kein Markdown, kein Hallo."
             )
-            msg = await _llm(prompt)
-            if msg and len(msg) > 5:
-                kb = [[InlineKeyboardButton("💬 Diskutieren", callback_data="chat")]]
-                await _psend(context, chat_id,
-                    text=f"💭 {msg}", reply_markup=InlineKeyboardMarkup(kb), parse_mode='Markdown')
-                _web_push(f"💭 {msg}", kb)
+
+        msg = await _llm(prompt)
+        if msg and len(msg) > 5:
+            _inject_proactive_context(context, msg)
+            await _psend(context, chat_id, text=f"💭 {_sanitize_md(msg)}")
+            _web_push(f"💭 {msg}")
 
     # ── P9: SMALLTALK-INITIATIVE ──────────────────────────
     if daytime in ("vormittag", "mittag", "nachmittag"):

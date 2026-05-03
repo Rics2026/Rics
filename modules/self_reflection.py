@@ -303,9 +303,10 @@ async def _generate_reflection(name: str, activity_summary: str, is_morning_deli
         f"Was du heute erlebt/verarbeitet hast:\n{activity_summary}\n\n"
         f"{context_hint}\n\n"
         f"Formuliere einen echten, persönlichen Gedanken aus deiner Ich-Perspektive — "
-        f"was hat dich dabei beschäftigt, was war seltsam, interessant oder auffällig? "
-        f"Nicht allgemein. Konkret aus deinen eigenen Erlebnissen.\n"
-        f"Kein 'Hallo', kein 'Guten Morgen'. Direkt rein. Max. 3 Sätze. Kein Markdown.\n\n"
+        f"konkret und alltäglich: was war interessant, was hast du bemerkt, was beschäftigt dich?\n"
+        f"Nicht philosophisch abhandeln. Eher wie: 'Ich hab heute gemerkt...' oder "
+        f"'Das mit X vorhin war interessant, weil...' oder 'Ich frag mich gerade ob {name}...'.\n"
+        f"Kein 'Hallo', kein 'Guten Morgen'. Direkt rein. Max. 2 Sätze. Kein Markdown.\n\n"
         f"Schreib am Ende auf einer neuen Zeile: \"TIEFE: N\"\n"
         f"(N = 1-5: 1=Routine, 2=interessant, 3=bedeutsam, 4=prägend, 5=unvergesslich)"
     )

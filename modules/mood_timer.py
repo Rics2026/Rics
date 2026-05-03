@@ -37,9 +37,10 @@ MOOD_NEGATIVE = [
     "hab gerade", "warte", "nicht jetzt", "muss grad", "keine lust"
 ]
 
-CURT_THRESHOLD     = 20    # Zeichen — darunter gilt Antwort als "kurz/abweisend"
-FAST_RESPONSE_SEC  = 180   # < 3 min → sehr schnelle Antwort
-RECENT_MSG_SEC     = 300   # < 5 min → aktives Gespräch läuft gerade
+CURT_THRESHOLD          = 20    # Zeichen — darunter gilt Antwort als "kurz/abweisend"
+FAST_RESPONSE_SEC       = 180   # < 3 min → sehr schnelle Antwort
+RECENT_MSG_SEC          = 300   # < 5 min → aktives Gespräch (interne Logik)
+CONVERSATION_PAUSE_SEC  = 900   # < 15 min seit letzter Nachricht → proaktiv komplett pausieren
 
 # State-Datei
 _PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -183,10 +184,11 @@ def should_send_now() -> bool:
     time_since_user_msg  = now - state.get("last_user_msg_ts",  0)
     skip_level           = state.get("skip_level", DEFAULT_SKIP_LEVEL)
 
-    # ── Aktives Gespräch? (Nachricht in den letzten 5 Minuten) ───────────────
-    if time_since_user_msg < RECENT_MSG_SEC:
-        # René schreibt gerade — kurze Wartezeit (10 min) verwenden
-        return time_since_proactive >= 600
+    # ── Aktives Gespräch? Hard-Pause solange René tippt ─────────────────────
+    if time_since_user_msg < CONVERSATION_PAUSE_SEC:
+        # René hat in den letzten 15 Min geschrieben → nicht reinquatschen
+        print(f"[mood_timer] Aktives Gespräch — Pause ({time_since_user_msg:.0f}s seit letzter Nachricht)")
+        return False
 
     # ── Normaler adaptiver Timer ─────────────────────────────────────────────
     interval_sec = _get_interval_sec(skip_level)
@@ -205,6 +207,12 @@ def should_send_now() -> bool:
         return True
 
     return False
+
+
+def is_user_active() -> bool:
+    """True wenn der User in den letzten CONVERSATION_PAUSE_SEC Sekunden geschrieben hat."""
+    state = _load()
+    return (time.time() - state.get("last_user_msg_ts", 0)) < CONVERSATION_PAUSE_SEC
 
 
 def get_status() -> dict:

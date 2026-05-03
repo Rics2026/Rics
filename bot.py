@@ -272,7 +272,7 @@ class PersonalMemory:
                 f["updated"] = datetime.now().isoformat()
                 self._write(data)
                 return
-        fakten.append({
+        fakten.insert(0, {
             "id":      self._next_id(fakten),
             "key":     k,
             "value":   v,
@@ -303,7 +303,7 @@ class PersonalMemory:
                 existing["value"]   = val
                 existing["updated"] = datetime.now().isoformat()
             else:
-                fakten.append({
+                fakten.insert(0, {
                     "id":      self._next_id(fakten),
                     "key":     key,
                     "value":   val,
@@ -519,24 +519,33 @@ class Jarvis:
     async def learn_from_message(self, user_text: str):
         from core.llm_client import get_client
 
-        prompt = f"""Analysiere diese Nachricht und extrahiere persönliche Fakten über den Nutzer.
-Antworte NUR mit einem JSON-Objekt. Wenn keine persönlichen Infos enthalten sind: {{}}
+        prompt = f"""Analysiere diese Nachricht und extrahiere DAUERHAFT gültige persönliche Fakten über den Nutzer.
+Antworte NUR mit einem JSON-Objekt. Wenn keine dauerhaften persönlichen Infos enthalten sind: {{}}
 
-Beispiele:
-- "Ich arbeite beim Landratsamt" → {{"job": "Landratsamt"}}
+NUR speichern wenn es eine STABILE, LANGFRISTIGE Information ist:
+✅ Name, Beruf, Arbeitgeber, Wohnort, Familie, Fahrzeug
+✅ Dauerhaftes Hobby, Sport, Interesse
+✅ Feste Gewohnheit ("trinke jeden Morgen Kaffee", "gehe jeden Dienstag zum Sport")
+✅ Wichtige Lebensdaten, feste Termine, Beziehungen
+
+Positiv-Beispiele:
+- "Ich arbeite beim Landratsamt" → {{"arbeitgeber": "Landratsamt"}}
 - "Ich fahre einen BMW" → {{"auto": "BMW"}}
-- "Ich heiße Klaus" → {{"name": "Klaus"}}
-- "Ich bin der Peter" → {{"name": "Peter"}}
 - "Mein bester Freund heißt Stas" → {{"bester_freund": "Stas"}}
 - "Ich spiele gerne Gitarre" → {{"hobby": "Gitarre spielen"}}
-- "Ich trinke morgens Kaffee" → {{"morgenroutine": "Kaffee trinken"}}
 - "Mein Hund heißt Bello" → {{"hund": "Bello"}}
-- "Ich laufe täglich 5km" → {{"sport": "Laufen 5km täglich"}}
-- "Wir haben eine Katze" → {{"katze": "vorhanden"}}
-- "Ich mag keine Tomaten" → {{"mag_nicht": "Tomaten"}}
+
+NICHT speichern (flüchtige/temporäre/situative Infos):
+❌ Aktuelle Aktivitäten ("ich liege gerade in der Wanne", "ich bin am saufen")
+❌ Momentane Zustände ("ich mache Mittagspause", "ich bin müde")
+❌ Aktuelle Wetterbeobachtungen, Tagesgeschehnisse
+❌ Dinge die gerade passieren oder gerade getan werden
+❌ Kontostand, Demo-Konto-Stand, aktuelle Zahlen die sich ändern
+❌ Was die Frau/Familie gerade macht ("Frau hat Trockner an")
+❌ Pläne für heute/morgen ohne dauerhaften Charakter
+❌ Allgemeines Smalltalk, Befehle, reine Fragen
 
 Schlüssel auf Deutsch, kurz und eindeutig.
-Ignoriere: reine Fragen, Befehle, Smalltalk ohne persönlichen Bezug.
 
 Nachricht: "{user_text}"
 
@@ -1214,60 +1223,16 @@ reset_wrapper.category    = "Gedächtnis"
 
 async def reflexion_wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
     jarvis: Jarvis = context.application.bot_data["jarvis"]
-    now = jarvis.get_now()
-
-    # ── BOT-Zeilen die als Ereignis relevant sind ────────────────────
-    # Schlüsselwörter im BOT:-Prefix die wir als Fakten festhalten
-    BOT_EVENT_KEYWORDS = [
-        "druck", "🖨️", "drucker",                      # 3D-Druck
-        "modul", "installiert", "module_installed",     # Orchestrator
-        "solar", "noah", "soc", "einspeisung",          # Energie
-        "backup", "update", "neustart",                 # System
-        "vision", "bild erkannt",                       # Vision
-        "moltbook",                                     # Moltbook
-    ]
-
-    stats = {"user": 0, "events": 0, "days": 0}
-
-    # ── Letzte 2 Tage lesen (heute + gestern) ───────────────────────
-    for days_ago in (1, 0):
-        date_str = (now - timedelta(days=days_ago)).strftime("%Y-%m-%d")
-        log_file = os.path.join(LOG_DIR, f"{date_str}.log")
-        if not os.path.exists(log_file):
-            continue
-        stats["days"] += 1
-
-        with open(log_file, "r", encoding="utf-8") as f:
-            lines = f.read().splitlines()
-
-        for line in lines:
-            stripped = line.strip()
-            if not stripped:
-                continue
-
-            # USER-Nachrichten → direkt als Nutzer-Memory
-            if stripped.startswith("USER:") or stripped.startswith("[WEB] USER:"):
-                text = stripped.split("USER:", 1)[-1].strip()
-                if len(text) > 10:
-                    jarvis.memory.add_user(f"[{date_str}] {text}")
-                    stats["user"] += 1
-
-            # BOT-Zeilen mit relevanten Ereignissen → als Fakt speichern
-            elif stripped.startswith("BOT:") or re.match(r"^\[.+\] BOT:", stripped):
-                bot_text = stripped.split("BOT:", 1)[-1].strip()
-                lower = bot_text.lower()
-                if any(kw in lower for kw in BOT_EVENT_KEYWORDS):
-                    jarvis.memory.add_fact(f"EREIGNIS [{date_str}]: {bot_text[:300]}")
-                    stats["events"] += 1
-
-    if stats["days"] == 0:
-        return await update.message.reply_text("Keine Logs gefunden (heute/gestern).")
-
-    await update.message.reply_text(
-        f"✅ Reflexion abgeschlossen ({stats['days']} Tag/e):\n"
-        f"  💬 {stats['user']} Nutzer-Nachrichten → Gedächtnis\n"
-        f"  📌 {stats['events']} Bot-Ereignisse → Fakten"
-    )
+    today    = jarvis.get_now().strftime("%Y-%m-%d")
+    log_file = os.path.join(LOG_DIR, f"{today}.log")
+    if not os.path.exists(log_file): return await update.message.reply_text("Keine Logs heute.")
+    with open(log_file, "r", encoding="utf-8") as f: lines = f.read().splitlines()
+    added = 0
+    for line in lines:
+        if line.startswith("USER:"):
+            jarvis.memory.add_user(line.replace("USER: ", ""))
+            added += 1
+    await update.message.reply_text(f"✅ {added} Einträge gelernt.")
 
 reflexion_wrapper.description = "Überträgt Tages-Logs ins Langzeitgedächtnis"
 reflexion_wrapper.category    = "Gedächtnis"

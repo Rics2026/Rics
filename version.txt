@@ -1,4 +1,4 @@
-Version 3.3
+Version 3.4
 bot.py
 core/llm_client.py
 modules/proactive_brain.py

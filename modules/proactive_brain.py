@@ -812,14 +812,8 @@ async def autonomous_thinker(context: ContextTypes.DEFAULT_TYPE):
     benzin_data  = None
 
     try:
-        from modules.solar import get_live_power_raw
-        raw = await get_live_power_raw()
-        if raw:
-            solar_data = {
-                "power_w":    round(raw.get("power", 0), 1),
-                "import_kwh": round(raw.get("in",    0), 2),
-                "export_kwh": round(raw.get("out",   0), 2),
-            }
+        from modules.solar import get_combined_energy_data
+        solar_data = await get_combined_energy_data()
     except Exception as e:
         print(f"Brain-Log Solar Fehler: {e}")
 
@@ -895,26 +889,55 @@ async def autonomous_thinker(context: ContextTypes.DEFAULT_TYPE):
     if settings.get("include_data_updates", False):
         COOLDOWN = 3600
         if solar_data:
-            power     = solar_data.get("power_w", 0)
-            solar_key = "solar_notify"
+            solar_key  = "solar_notify"
+            eco_power  = solar_data.get("eco_power_w")     # + Bezug, - Einspeisung
+            noah_pac   = solar_data.get("noah_pac_w", 0)   # Noah-Ausgang (max ~800W)
+            noah_ppv   = solar_data.get("noah_ppv_w", 0)   # Solar PV
+            hausverbr  = solar_data.get("hausverbrauch_w")  # eco + pac
+            solar_pct  = solar_data.get("solar_pct")        # Solaranteil %
+            noah_soc   = solar_data.get("noah_soc_pct")
+            noah_on    = solar_data.get("noah_online", False)
+
             if (now_ts - LAST_WARNING.get(solar_key, 0)) > COOLDOWN:
                 situation = None
-                if power < -3000:
-                    situation = f"Die Solaranlage exportiert gerade {abs(power):.0f}W ins Netz — läuft richtig gut."
-                elif power > 200:
-                    situation = f"Gerade {power:.0f}W Netzbezug — die Anlage liefert momentan nichts."
+
+                # Noah speist ein UND eco ist negativ → Überschuss ins Netz
+                if eco_power is not None and eco_power < -10 and noah_pac and noah_pac > 50:
+                    situation = (
+                        f"Der Noah liefert gerade {noah_pac:.0f}W, "
+                        f"davon gehen {abs(eco_power):.0f}W ungenutzt ins Netz."
+                    )
+                # Hoher Hausverbrauch, Noah hilft aber mit
+                elif hausverbr and hausverbr > 1500 and noah_pac and noah_pac > 50:
+                    situation = (
+                        f"Gerade {hausverbr:.0f}W Hausverbrauch — "
+                        f"Noah steuert {noah_pac:.0f}W bei, Rest kommt vom Netz."
+                    )
+                # Noah läuft gut, deckt Großteil
+                elif solar_pct and solar_pct >= 80 and noah_on:
+                    situation = (
+                        f"Noah deckt gerade {solar_pct:.0f}% des Hausbedarfs "
+                        f"({noah_pac:.0f}W bei {hausverbr:.0f}W Verbrauch)."
+                    )
+                # Hoher Netzbezug, Noah liefert nichts
+                elif eco_power and eco_power > 800 and (not noah_pac or noah_pac < 20):
+                    situation = (
+                        f"Gerade {eco_power:.0f}W reiner Netzbezug "
+                        f"— Noah ist im Standby."
+                    )
+
                 if situation:
                     LAST_WARNING[solar_key] = now_ts
                     prompt = (
                         f"Du bist {BOT_NAME} — KI-Freund von {name}. Zeit: {now_str}\n\n"
-                        f"Solar-Info: {situation}\n\n"
+                        f"Energie-Info: {situation}\n\n"
                         f"Erwähne das beiläufig in genau einem Satz — wie ein Freund der das kurz einwirft. "
                         f"Kein Markdown, kein Hallo, kein Präambel."
                     )
                     msg = await _llm(prompt)
                     if msg:
-                        await _psend(context, chat_id, text=f"☀️ {_sanitize_md(msg)}")
-                        _web_push(f"☀️ {msg}")
+                        await _psend(context, chat_id, text=f"⚡ {_sanitize_md(msg)}")
+                        _web_push(f"⚡ {msg}")
                         return
 
         if wetter_data:
@@ -1068,7 +1091,7 @@ async def autonomous_thinker(context: ContextTypes.DEFAULT_TYPE):
         temporal_hint = "Das ist zeitlich dringend gemeint." if topic_data.get("temporal") == "concrete" else ""
         live_context  = ""
         if urgent_topic == "solar" and solar_data:
-            live_context = f"Aktuelle Solar-Daten: {json.dumps(solar_data, ensure_ascii=False)}"
+            live_context = f"Aktuelle Energie-Daten (Noah + Netz kombiniert): {json.dumps(solar_data, ensure_ascii=False)}"
         elif urgent_topic == "wetter" and wetter_data:
             live_context = f"Aktuelles Wetter: {json.dumps(wetter_data, ensure_ascii=False)}"
         elif urgent_topic == "benzin" and benzin_data:
@@ -1111,7 +1134,7 @@ async def autonomous_thinker(context: ContextTypes.DEFAULT_TYPE):
             # Live-Daten einbinden wenn Topic passt
             live_data_hint = ""
             if topic == "solar" and solar_data:
-                live_data_hint = f"\nAktuelle Solar-Daten: {json.dumps(solar_data, ensure_ascii=False)}"
+                live_data_hint = f"\nAktuelle Energie-Daten (Noah + Netz kombiniert): {json.dumps(solar_data, ensure_ascii=False)}"
             elif topic == "wetter" and wetter_data:
                 live_data_hint = f"\nAktuelles Wetter: {json.dumps(wetter_data, ensure_ascii=False)}"
             elif topic == "benzin" and benzin_data:

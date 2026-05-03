@@ -1,3 +1,6 @@
 Version 3.3
 bot.py
-core/brain.py
+core/llm_client.py
+modules/proactive_brain.py
+modules/solar.py
+modules/memory_viewer.py

@@ -1,4 +1,9 @@
 Update 3.4
 - bot.py   - fix
 - proactive_brain und solar nutzen neue Logik
--memory_viewer.py - /memory_cleanup reinigt jetzt auch Persomal.json (/ichnbin)
+- memory_viewer.py - /memory_cleanup reinigt jetzt auch Persomal.json (/ichnbin)
+- mood_timer.py  läuft agiler und erkennt Aktive gespräche im Chat.
+- self_reflection.py Prompt verschärft eher Kumpel
+- proactive_brain.py nutzt:
+  - Erinnerungs-Modus
+  - Alltagsmodus

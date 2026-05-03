@@ -15,9 +15,14 @@ load_dotenv()
 # PROVIDER CONFIGS
 # -----------------------------
 PROVIDERS = {
-    "deepseek": {
+    "deepseek": {                        # Flash / V3 — Standard für alle normalen Calls
         "url":   "https://api.deepseek.com/v1/chat/completions",
-        "model": "deepseek-chat",
+        "model": "deepseek-chat",        # = DeepSeek V3 Flash
+        "key":   "DEEPSEEK_API_KEY",
+    },
+    "deepseek-reasoner": {               # Thinking / R1 — für Orchestrator & komplexe Aufgaben
+        "url":   "https://api.deepseek.com/v1/chat/completions",
+        "model": "deepseek-reasoner",    # = DeepSeek R1 (Chain-of-Thought)
         "key":   "DEEPSEEK_API_KEY",
     },
     "groq": {
@@ -26,6 +31,10 @@ PROVIDERS = {
         "key":   "GROQ_API_KEY",
     },
 }
+
+# Model-Shortcuts für externe Aufrufer
+DS_FLASH    = "deepseek-chat"       # schnell, günstig — Standard
+DS_THINKING = "deepseek-reasoner"  # Thinking/R1 — für Orchestrator
 
 CHUNK_SIZE = 15  # Token zwischen Telegram-Updates
 
@@ -59,13 +68,14 @@ class LLMClient:
     # -----------------------------
     # API STREAM (DeepSeek / Groq)
     # -----------------------------
-    async def _api_stream(self, messages: list, on_chunk):
+    async def _api_stream(self, messages: list, on_chunk, model_override: str = None):
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type":  "application/json",
         }
+        model = model_override or self.provider["model"]
         payload = {
-            "model":      self.provider["model"],
+            "model":      model,
             "messages":   messages,
             "stream":     True,
             "max_tokens": 1024,
@@ -117,11 +127,36 @@ class LLMClient:
     # Für Hintergrundaufgaben wie learn_from_message()
     # Nutzt Deepseek API falls verfügbar, sonst Ollama Fallback
     # -----------------------------
-    async def chat_json(self, messages: list, ollama_model: str = None) -> dict:
+    @staticmethod
+    def _extract_json(raw: str):
         """
-        Einfacher nicht-streamender API-Call, gibt JSON zurück.
-        Perfekt für learn_from_message() — schnell, kein Thinking-Modus.
-        Returns: dict (geparste JSON-Antwort) oder {} bei Fehler
+        Extrahiert das erste gültige JSON-Objekt oder Array aus einem String.
+        Nutzt raw_decode → stoppt nach dem ersten vollständigen JSON-Wert,
+        ignoriert Trailing-Text oder mehrere JSON-Blöcke sauber.
+        """
+        raw = re.sub(r"```json|```", "", raw).strip()
+        raw = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
+        decoder = json.JSONDecoder()
+        # Erstes { oder [ suchen und von dort raw_decode aufrufen
+        # Frühestes { oder [ gewinnt — korrekt für Arrays und Objekte
+        candidates = sorted(
+            [(raw.find(c), c) for c in ("{", "[") if raw.find(c) != -1]
+        )
+        for start, _ in candidates:
+            if start == -1:
+                continue
+            try:
+                obj, _ = decoder.raw_decode(raw, start)
+                return obj
+            except json.JSONDecodeError:
+                continue
+        # Letzter Versuch: direkt parsen
+        return json.loads(raw)
+
+    async def chat_json(self, messages: list, ollama_model: str = None, max_tokens: int = 256):
+        """
+        Nicht-streamender API-Call, gibt geparste JSON-Antwort zurück.
+        Returns: dict oder list (je nach LLM-Antwort), {} bei Fehler.
         """
         self.reload()
 
@@ -136,7 +171,7 @@ class LLMClient:
                     "model":       self.provider["model"],
                     "messages":    messages,
                     "stream":      False,
-                    "max_tokens":  256,
+                    "max_tokens":  max_tokens,
                     "temperature": 0,
                 }
                 async with httpx.AsyncClient(timeout=30) as client:
@@ -147,13 +182,7 @@ class LLMClient:
                     )
                 if response.status_code == 200:
                     content = response.json()["choices"][0]["message"]["content"].strip()
-                    # JSON aus Antwort extrahieren
-                    content = re.sub(r"```json|```", "", content).strip()
-                    # Nur den JSON-Teil nehmen (falls Thinking-Text davor)
-                    json_match = re.search(r'\{.*\}', content, re.DOTALL)
-                    if json_match:
-                        return json.loads(json_match.group())
-                    return json.loads(content)
+                    return self._extract_json(content)
             except Exception as e:
                 print(f"⚠️ chat_json API Fehler: {e} → Ollama Fallback")
 
@@ -170,13 +199,8 @@ class LLMClient:
                     options={"temperature": 0}
                 )
             )
-            raw = re.sub(r"```json|```", "", res['message']['content']).strip()
-            # Thinking-Tags entfernen falls vorhanden
-            raw = re.sub(r'<think>.*?</think>', '', raw, flags=re.DOTALL).strip()
-            json_match = re.search(r'\{.*\}', raw, re.DOTALL)
-            if json_match:
-                return json.loads(json_match.group())
-            return json.loads(raw)
+            raw = res["message"]["content"]
+            return self._extract_json(raw)
         except Exception as e:
             print(f"⚠️ chat_json Ollama Fehler: {e}")
             return {}
@@ -184,11 +208,13 @@ class LLMClient:
     # -----------------------------
     # HAUPT-METHODE
     # -----------------------------
-    async def chat_stream(self, messages: list, on_update, on_fallback=None) -> str:
+    async def chat_stream(self, messages: list, on_update, on_fallback=None,
+                          model_override: str = None) -> str:
         """
         Streamt Token für Token.
-        - on_update(text)    → alle CHUNK_SIZE Token aufgerufen
-        - on_fallback()      → einmalig bei Rate Limit / kein Key
+        - on_update(text)       → alle CHUNK_SIZE Token aufgerufen
+        - on_fallback()         → einmalig bei Rate Limit / kein Key
+        - model_override (str)  → überschreibt Provider-Modell (z.B. DS_THINKING)
         Returns: vollständiger Antworttext
         """
         self.reload()
@@ -206,7 +232,7 @@ class LLMClient:
         # --- Versuch: API Provider ---
         if self.is_available():
             try:
-                await self._api_stream(messages, collect)
+                await self._api_stream(messages, collect, model_override=model_override)
             except (RateLimitError, NoKeyError) as e:
                 print(f"⚡ {e} → Fallback auf Ollama")
                 self.using_fallback = True

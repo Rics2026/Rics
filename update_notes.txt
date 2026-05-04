@@ -4,3 +4,4 @@ Update 3.6
   - Bot Reagiert auf Emoticons auf Nachichten 
 - screensaver.py - Webinterface erweitert durch Screensaver Panel
 - behavior_engine.py - ein Modul was deinem Bot angewohnheiten bei bringt
+- web_app.py bringt deinem Bot jetzt bei was das Webinterface ist

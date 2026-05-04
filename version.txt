@@ -1,2 +1,6 @@
 Version 3.5
 bot.py
+modules/discord_ki_server.py
+modules/screensaver.py
+modules/web_app.py
+modules/behavior_engine.py

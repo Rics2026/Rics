@@ -465,7 +465,7 @@ body::before{content:'';position:fixed;inset:0;background:radial-gradient(ellips
   <button class="tab" onclick="switchTab(event,'sett')">Settings</button>
   <button class="tab" onclick="switchTab(event,'kiconf');loadKiConfig()">KI-Config</button>
   <a class="tab" href="/lab" style="text-decoration:none">⚗️ Lab</a>
-  <a class="tab" href="/screen/" style="text-decoration:none">🖥️ Panel</a>
+  <button class="tab" onclick="openPanel()">🖥️ Panel</button>
 </div>
 
 <!-- MAIN -->
@@ -1393,6 +1393,37 @@ async function saveActions() {
     }
   } catch(e) { showToast('❌ ' + e.message, 'err'); }
 }
+</script>
+
+<!-- ── Panel Overlay ── -->
+<div id="panel-overlay" style="display:none;position:fixed;inset:0;z-index:9000;background:#020617">
+  <iframe id="panel-frame" src="" style="width:100%;height:100%;border:none"></iframe>
+</div>
+
+<script>
+function openPanel() {
+  const overlay = document.getElementById('panel-overlay');
+  const frame   = document.getElementById('panel-frame');
+  frame.src = '/screen/';
+  overlay.style.display = 'block';
+  history.pushState({panel: true}, '', '/screen/');
+}
+
+function closePanel() {
+  const overlay = document.getElementById('panel-overlay');
+  const frame   = document.getElementById('panel-frame');
+  overlay.style.display = 'none';
+  frame.src = '';
+}
+
+window.addEventListener('popstate', function(e) {
+  if (!e.state || !e.state.panel) {
+    closePanel();
+  }
+});
+
+// Screensaver-iframe ruft window.parent.closePanel() auf
+window.closePanel = closePanel;
 </script>
 </body>
 </html>"""

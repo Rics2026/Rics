@@ -502,13 +502,13 @@ def _prepare_telegram_msg(text: str) -> tuple[str, str | None]:
     for i, part in enumerate(parts):
         if i % 2 == 0:
             # Normaler Text: escapen, dann **bold** und `code` umwandeln
-            escaped = html.escape(part)
+            escaped = html.escape(part, quote=False)
             escaped = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', escaped, flags=re.DOTALL)
             escaped = re.sub(r'`([^`\n]+)`', r'<code>\1</code>', escaped)
             result.append(escaped)
         else:
             # Code-Block-Inhalt: nur escapen, in <pre> wrappen
-            result.append(f'<pre>{html.escape(part)}</pre>')
+            result.append(f'<pre>{html.escape(part, quote=False)}</pre>')
 
     return ''.join(result), 'HTML'
 
@@ -691,8 +691,11 @@ Nur JSON:"""
                     text=chunks[0], parse_mode=parse_mode
                 )
                 break
-            except Exception:
-                pass
+            except Exception as e:
+                if "message is not modified" in str(e).lower():
+                    break  # on_update hat bereits denselben Text gesetzt → kein Fallback
+                if parse_mode is None:
+                    pass  # letzter Versuch fehlgeschlagen, aufgeben
         # Weitere Chunks → neue Nachrichten
         for chunk in chunks[1:]:
             for parse_mode in (pm, None):
@@ -701,8 +704,11 @@ Nur JSON:"""
                         chat_id=chat_id, text=chunk, parse_mode=parse_mode
                     )
                     break
-                except Exception:
-                    pass
+                except Exception as e:
+                    if "message is not modified" in str(e).lower():
+                        break
+                    if parse_mode is None:
+                        pass
 
     def log_chat(self, user_text, assistant_text):
         today    = self.get_now().strftime("%Y-%m-%d")

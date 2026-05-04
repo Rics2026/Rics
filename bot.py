@@ -1133,12 +1133,27 @@ Nur JSON:"""
         except Exception:
             pass
 
+        # ── Direktive erkennen & sofort speichern (vor LLM-Aufruf) ──
+        try:
+            from modules.behavior_engine import detect_and_store_directive as _detect_dir
+            _detect_dir(raw_user_text)
+        except Exception:
+            pass
+
+        # ── Verhaltens-Profil (adaptiv + Direktregeln) ───────────────
+        behavior_section = ""
+        try:
+            from modules.behavior_engine import get_behavior_section
+            behavior_section = get_behavior_section()
+        except Exception:
+            pass
+
         system_msg = f"""{self.system_prompt}
 
 ━━━ AKTUELLE ZEIT: {now_str} ━━━
 (Diese Zeit ist verbindlich — verwende sie für alle zeitbezogenen Aussagen.)
 
-{personal_text}{brain_section}{memory_section}{brain_file_section}{discord_section}{energie_section}{web_wissen_section}{ki_server_section}{capabilities_section}"""
+{personal_text}{brain_section}{memory_section}{brain_file_section}{discord_section}{energie_section}{web_wissen_section}{ki_server_section}{capabilities_section}{behavior_section}"""
 
         msgs = (
             [{"role": "system", "content": system_msg}]
@@ -1217,6 +1232,13 @@ Nur JSON:"""
                 print(f"⚠️ mood_timer: {e}")
 
             asyncio.create_task(self.learn_from_message(raw_user_text))
+
+            # Verhaltens-Engine: Muster aus diesem Austausch lernen
+            try:
+                from modules.behavior_engine import analyze_exchange as _analyze_beh
+                asyncio.create_task(asyncio.to_thread(_analyze_beh, raw_user_text, answer))
+            except Exception as e:
+                print(f"⚠️ behavior_engine: {e}")
 
         except Exception as e:
             await update.message.reply_text(f"❌ Fehler: {e}")

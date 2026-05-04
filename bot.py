@@ -70,7 +70,7 @@ from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, MessageReactionHandler, ContextTypes, filters
 
 # ---------------- LOGGING ----------------
 logging.basicConfig(
@@ -467,6 +467,54 @@ class VectorMemory:
 
 
 # ════════════════════════════════════════════════════════════════
+# TELEGRAM-NACHRICHTEN HELPER
+# ════════════════════════════════════════════════════════════════
+def _prepare_telegram_msg(text: str) -> tuple:
+    """
+    Wandelt Markdown-Formatierung in Telegram-HTML um.
+    Gibt (send_text, parse_mode) zurück.
+
+    Warum HTML statt legacy-Markdown für Code-Blöcke:
+    Legacy-Markdown bricht bei Unicode-Sonderzeichen (Boxzeichen, ←→ usw.)
+    innerhalb von ```-Blöcken → safe_send fällt auf plain zurück → rohe Backticks.
+    HTML-<pre> ist dagegen immun gegen beliebige Zeichen im Inhalt.
+    """
+    has_codeblock   = '```' in text
+    has_bold        = '**' in text
+    has_inline_code = re.search(r'`[^`\n]+`', text) is not None
+
+    if not (has_codeblock or has_bold or has_inline_code):
+        return text, None
+
+    if not has_codeblock:
+        # Kein mehrzeiliger Code-Block → legacy Markdown reicht
+        return text, 'Markdown'
+
+    # ── Code-Blöcke vorhanden → alles nach HTML konvertieren ──
+    # Split an ```lang\n...``` Blöcken; ungerade Indizes = Block-Inhalt
+    parts = re.split(r'```(?:\w*)\n?(.*?)```', text, flags=re.DOTALL)
+
+    if len(parts) == 1:
+        # Kein geschlossener Block (noch mitten im Stream) → plain
+        return text, None
+
+    result = []
+    for i, part in enumerate(parts):
+        if i % 2 == 0:
+            # Normaler Text: escapen, dann **bold** und `code` umwandeln
+            # quote=False: " bleibt ", Telegram kennt &quot; nicht
+            escaped = html.escape(part, quote=False)
+            escaped = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', escaped, flags=re.DOTALL)
+            escaped = re.sub(r'`([^`\n]+)`', r'<code>\1</code>', escaped)
+            result.append(escaped)
+        else:
+            # Code-Block-Inhalt: nur escapen, in <pre> wrappen
+            result.append(f'<pre>{html.escape(part, quote=False)}</pre>')
+
+    return ''.join(result), 'HTML'
+
+
+# ════════════════════════════════════════════════════════════════
 # JARVIS ENGINE
 # ════════════════════════════════════════════════════════════════
 class Jarvis:
@@ -610,7 +658,7 @@ Nur JSON:"""
     # LONG MESSAGE HELPER
     # ────────────────────────────────────────────────────────────
     @staticmethod
-    def _split_message(text: str, max_len: int = 4000) -> list[str]:
+    def _split_message(text: str, max_len: int = 4000) -> list:
         """Teilt langen Text sauber an Zeilenumbrüchen in Telegram-taugliche Chunks."""
         chunks = []
         while len(text) > max_len:
@@ -625,8 +673,8 @@ Nur JSON:"""
 
     async def _finalize_message(self, context, chat_id: int, msg_id: int, text: str):
         """Editiert Placeholder mit erstem Chunk; bei Überlänge folgen weitere Nachrichten."""
-        pm = 'Markdown' if '```' in text else None
-        chunks = self._split_message(text)
+        send_text, pm = _prepare_telegram_msg(text)
+        chunks = self._split_message(send_text)
         # Ersten Chunk → Placeholder editieren
         for parse_mode in (pm, None):
             try:
@@ -635,8 +683,11 @@ Nur JSON:"""
                     text=chunks[0], parse_mode=parse_mode
                 )
                 break
-            except Exception:
-                pass
+            except Exception as e:
+                if "message is not modified" in str(e).lower():
+                    break  # on_update hat bereits denselben Text gesetzt → kein Fallback
+                if parse_mode is None:
+                    pass
         # Weitere Chunks → neue Nachrichten
         for chunk in chunks[1:]:
             for parse_mode in (pm, None):
@@ -645,8 +696,11 @@ Nur JSON:"""
                         chat_id=chat_id, text=chunk, parse_mode=parse_mode
                     )
                     break
-                except Exception:
-                    pass
+                except Exception as e:
+                    if "message is not modified" in str(e).lower():
+                        break
+                    if parse_mode is None:
+                        pass
 
     def log_chat(self, user_text, assistant_text):
         today    = self.get_now().strftime("%Y-%m-%d")
@@ -921,9 +975,24 @@ Nur JSON:"""
         if not user_text:
             return
 
+        # raw_user_text → für memory/learn (unverändert wie eingegeben)
+        raw_user_text = user_text
+
+        # ── Reply-Kontext ──────────────────────────────────────
+        # user_text    → LLM (vollständiger Kontext, 300 Zeichen Zitat)
+        # log_user_text → Log (kompakte Darstellung mit ↩️-Prefix)
+        # raw_user_text → memory/mood/learn (unverändert)
+        reply_msg = update.message.reply_to_message
+        if reply_msg and reply_msg.text:
+            quoted = reply_msg.text[:300].strip()
+            user_text     = f'[Bezug auf Nachricht: "{quoted}"]\n{user_text}'
+            log_user_text = f'↩️ "{reply_msg.text[:80].strip()}" → {raw_user_text}'
+        else:
+            log_user_text = raw_user_text
+
         pending = context.user_data.get("pending_action")
         if pending:
-            text_lower = user_text.strip().lower()
+            text_lower = raw_user_text.strip().lower()
             JA_WORTE = {"ja", "ok", "jo", "klar", "go", "los", "mach", "yep", "sure",
                         "ja mach", "mach das", "mach es", "ja genau", "ja schau", "ausführen"}
             NEIN_WORTE = {"nein", "nö", "nope", "nicht", "lass", "abbrechen", "stop", "cancel"}
@@ -932,9 +1001,9 @@ Nur JSON:"""
                 await self.execute_pending_action(update.message, context, pending)
                 original_answer = pending.get("answer", "")
                 preview_clean   = re.sub(r"<[^>]+>", "", pending.get("preview", "")).strip()
-                self.chat_history.append({"role": "user",      "content": user_text})
+                self.chat_history.append({"role": "user",      "content": raw_user_text})
                 self.chat_history.append({"role": "assistant",  "content": original_answer})
-                self.log_chat(user_text, preview_clean)
+                self.log_chat(log_user_text, preview_clean)
                 return
             if any(text_lower == w or text_lower.startswith(w) for w in NEIN_WORTE):
                 context.user_data.pop("pending_action")
@@ -1001,7 +1070,6 @@ Nur JSON:"""
         now_str        = self.brain.get_now().strftime("%d.%m.%Y %H:%M") if self.brain else datetime.now().strftime("%d.%m.%Y %H:%M")
         brain_section  = f"\n### BRAIN:\n{brain_data}"        if brain_data and brain_data != "KEINE DATEN" else ""
         memory_section = f"\n### GEDÄCHTNIS:\n{past_context}" if past_context else ""
-      
 
         # KI-Server Action-Hint — nur wenn discord_ki_server geladen ist
         ki_server_section = ""
@@ -1020,13 +1088,13 @@ Nur JSON:"""
             )
         except ImportError:
             pass
-     
+
         # ── Web-Wissen aus lernmodul ────────────────────────────
         web_wissen_section = ""
         try:
             from modules.lernmodul import search_web_knowledge, _load_state
             _wissen = search_web_knowledge(user_text, n=3)
-            
+
             # Lern-Summary immer dabei (was wurde heute gelernt)
             _state = _load_state()
             _last = _state.get("last_learned", {})
@@ -1039,7 +1107,7 @@ Nur JSON:"""
                         _heute.append(_topic)
                 except Exception:
                     pass
-            
+
             parts = []
             if _heute:
                 parts.append(f"Heute gelernte Topics: {', '.join(_heute)}")
@@ -1101,12 +1169,17 @@ Nur JSON:"""
                 nonlocal last_text
                 if text and text != last_text:
                     try:
-                        pm = 'Markdown' if '```' in text else None
-                        await context.bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=text, parse_mode=pm)
+                        send_text, pm = _prepare_telegram_msg(text)
+                        await context.bot.edit_message_text(
+                            chat_id=chat_id, message_id=msg_id,
+                            text=send_text, parse_mode=pm
+                        )
                         last_text = text
                     except Exception:
                         try:
-                            await context.bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=text)
+                            await context.bot.edit_message_text(
+                                chat_id=chat_id, message_id=msg_id, text=text
+                            )
                             last_text = text
                         except Exception:
                             pass
@@ -1122,7 +1195,7 @@ Nur JSON:"""
 
             answer = await groq.chat_stream(msgs, on_update, on_fallback)
 
-            if await self.propose_action(update, answer, context, user_text=user_text):
+            if await self.propose_action(update, answer, context, user_text=raw_user_text):
                 clean = self._strip_action_block(answer)
                 if clean:
                     await self._finalize_message(context, chat_id, msg_id, clean)
@@ -1133,28 +1206,101 @@ Nur JSON:"""
                         pass
                 return
 
-            # Finale Antwort sicherstellen — bei Überlänge in mehrere Nachrichten aufteilen
+            # Finale Antwort sicherstellen
             await self._finalize_message(context, chat_id, msg_id, answer)
 
-            self.chat_history.append({"role": "user",      "content": user_text})
+            self.chat_history.append({"role": "user",      "content": raw_user_text})
             self.chat_history.append({"role": "assistant",  "content": answer})
-            self.memory.add_user(user_text)
+            self.memory.add_user(raw_user_text)
             self.memory.add_assistant(answer)
-            self.log_chat(user_text, answer)
+            self.log_chat(log_user_text, answer)
 
             try:
                 from modules.proactive_brain import update_interests_from_chat
                 update_interests_from_chat([
-                    {"role": "user",      "message": user_text},
+                    {"role": "user",      "message": raw_user_text},
                     {"role": "assistant", "message": answer},
                 ])
             except Exception as e:
                 print(f"⚠️ update_interests: {e}")
 
-            asyncio.create_task(self.learn_from_message(user_text))
+            # mood_timer — Stimmung + Verfügbarkeit aus Nachricht lernen
+            try:
+                from modules.mood_timer import on_user_message as _mt_msg
+                _mt_msg(raw_user_text)
+            except Exception as e:
+                print(f"⚠️ mood_timer: {e}")
+
+            asyncio.create_task(self.learn_from_message(raw_user_text))
 
         except Exception as e:
             await update.message.reply_text(f"❌ Fehler: {e}")
+
+    # ────────────────────────────────────────────────────────────
+    # EMOJI-REAKTIONEN
+    # ────────────────────────────────────────────────────────────
+    async def handle_reaction(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Verarbeitet Emoji-Reaktionen auf Bot-Nachrichten."""
+        reaction = update.message_reaction
+        if not reaction or not reaction.new_reaction:
+            return
+
+        # Nur Reaktionen auf eigene Nachrichten (Bot) beachten
+        if reaction.actor_chat:
+            return  # Kanal-Reaktion, ignorieren
+
+        try:
+            from telegram import ReactionTypeEmoji
+            emojis = [
+                r.emoji for r in reaction.new_reaction
+                if isinstance(r, ReactionTypeEmoji)
+            ]
+        except ImportError:
+            emojis = [getattr(r, "emoji", "?") for r in reaction.new_reaction]
+
+        if not emojis:
+            return
+
+        emoji_str = " ".join(emojis)
+        chat_id   = reaction.chat.id
+
+        # Kontext: letzte Bot-Antwort als Bezug
+        reacted_text = ""
+        try:
+            for entry in reversed(self.chat_history):
+                if entry.get("role") == "assistant":
+                    reacted_text = entry["content"][:150].strip()
+                    break
+        except Exception:
+            pass
+
+        context_hint = f' auf "{reacted_text}"' if reacted_text else ""
+        reaction_user_msg = f'[Emoji-Reaktion {emoji_str}{context_hint}]'
+
+        now_str = self.brain.get_now().strftime("%d.%m.%Y %H:%M") if self.brain else datetime.now().strftime("%d.%m.%Y %H:%M")
+        system_msg = f"""{self.system_prompt}
+
+━━━ AKTUELLE ZEIT: {now_str} ━━━
+
+Der Nutzer hat auf eine deiner Nachrichten mit {emoji_str} reagiert.
+Antworte kurz und natürlich darauf — max. 1-2 Sätze. Kein langer Text."""
+
+        msgs = (
+            [{"role": "system", "content": system_msg}]
+            + self.chat_history[-4:]
+            + [{"role": "user", "content": reaction_user_msg}]
+        )
+
+        try:
+            from core.llm_client import get_client
+            client = get_client()
+            answer = await client.chat_stream(msgs, on_update=lambda t: asyncio.sleep(0))
+            if answer and answer.strip():
+                await context.bot.send_message(chat_id=chat_id, text=answer.strip())
+                self.chat_history.append({"role": "user",      "content": reaction_user_msg})
+                self.chat_history.append({"role": "assistant", "content": answer})
+        except Exception as e:
+            print(f"[reaction] Fehler: {e}")
 
 
 # ════════════════════════════════════════════════════════════════
@@ -1438,8 +1584,9 @@ def main():
     app.add_handler(CommandHandler("vergiss",   vergiss_wrapper))
     app.add_handler(CallbackQueryHandler(action_confirm_callback, pattern=r"^action_confirm:"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, jarvis.chat))
+    app.add_handler(MessageReactionHandler(jarvis.handle_reaction))
 
-    app.run_polling()
+    app.run_polling(allowed_updates=["message", "callback_query", "message_reaction"])
 
 
 if __name__ == "__main__":

@@ -110,8 +110,10 @@ async def timer_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     timers  = _get_timers(context)
     chat_id = update.effective_chat.id
 
-    # Nur Timer dieses Chats anzeigen
+    # Eigene Timer zuerst, sonst alle (cross-channel: Web ↔ Telegram)
     eigene = {k: v for k, v in timers.items() if v.get("chat_id") == chat_id}
+    if not eigene:
+        eigene = dict(timers)  # alle zeigen wenn eigene leer
 
     if not eigene:
         return await update.message.reply_text("📭 Keine aktiven Timer.")
@@ -154,6 +156,10 @@ async def timer_stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     timers  = _get_timers(context)
     chat_id = update.effective_chat.id
     eigene  = [k for k, v in timers.items() if v.get("chat_id") == chat_id]
+
+    # Fallback: auch Timer anderer chat_ids stoppen (Web ↔ Telegram)
+    if not eigene:
+        eigene = list(timers.keys())
 
     if not eigene:
         return await update.message.reply_text("📭 Keine aktiven Timer zum Stoppen.")

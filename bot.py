@@ -70,7 +70,7 @@ from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes, filters
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, MessageReactionHandler, ContextTypes, filters
 
 # ---------------- LOGGING ----------------
 logging.basicConfig(
@@ -467,6 +467,53 @@ class VectorMemory:
 
 
 # ════════════════════════════════════════════════════════════════
+# TELEGRAM-NACHRICHTEN HELPER
+# ════════════════════════════════════════════════════════════════
+def _prepare_telegram_msg(text: str) -> tuple[str, str | None]:
+    """
+    Wandelt Markdown-Formatierung in Telegram-HTML um.
+    Gibt (send_text, parse_mode) zurück.
+
+    Warum HTML statt legacy-Markdown für Code-Blöcke:
+    Legacy-Markdown bricht bei Unicode-Sonderzeichen (Boxzeichen, ←→ usw.)
+    innerhalb von ```-Blöcken → safe_send fällt auf plain zurück → rohe Backticks.
+    HTML-<pre> ist dagegen immun gegen beliebige Zeichen im Inhalt.
+    """
+    has_codeblock  = '```' in text
+    has_bold       = '**' in text
+    has_inline_code = re.search(r'`[^`\n]+`', text) is not None
+
+    if not (has_codeblock or has_bold or has_inline_code):
+        return text, None
+
+    if not has_codeblock:
+        # Kein mehrzeiliger Code-Block → legacy Markdown reicht
+        return text, 'Markdown'
+
+    # ── Code-Blöcke vorhanden → alles nach HTML konvertieren ──
+    # Split an ```lang\n...``` Blöcken; ungerade Indizes = Block-Inhalt
+    parts = re.split(r'```(?:\w*)\n?(.*?)```', text, flags=re.DOTALL)
+
+    if len(parts) == 1:
+        # Kein geschlossener Block (noch mitten im Stream) → plain
+        return text, None
+
+    result = []
+    for i, part in enumerate(parts):
+        if i % 2 == 0:
+            # Normaler Text: escapen, dann **bold** und `code` umwandeln
+            escaped = html.escape(part)
+            escaped = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', escaped, flags=re.DOTALL)
+            escaped = re.sub(r'`([^`\n]+)`', r'<code>\1</code>', escaped)
+            result.append(escaped)
+        else:
+            # Code-Block-Inhalt: nur escapen, in <pre> wrappen
+            result.append(f'<pre>{html.escape(part)}</pre>')
+
+    return ''.join(result), 'HTML'
+
+
+# ════════════════════════════════════════════════════════════════
 # JARVIS ENGINE
 # ════════════════════════════════════════════════════════════════
 class Jarvis:
@@ -634,8 +681,8 @@ Nur JSON:"""
 
     async def _finalize_message(self, context, chat_id: int, msg_id: int, text: str):
         """Editiert Placeholder mit erstem Chunk; bei Überlänge folgen weitere Nachrichten."""
-        pm = 'Markdown' if '```' in text else None
-        chunks = self._split_message(text)
+        send_text, pm = _prepare_telegram_msg(text)
+        chunks = self._split_message(send_text)
         # Ersten Chunk → Placeholder editieren
         for parse_mode in (pm, None):
             try:
@@ -930,6 +977,18 @@ Nur JSON:"""
         if not user_text:
             return
 
+        # raw_user_text → für memory/learn (unverändert wie eingegeben)
+        raw_user_text = user_text
+
+        # ── Reply-Kontext: Wenn der User auf eine Nachricht antwortet ──
+        reply_msg = update.message.reply_to_message
+        if reply_msg and reply_msg.text:
+            quoted = reply_msg.text[:300].strip()
+            user_text     = f'[Bezug auf Nachricht: "{quoted}"]\n{user_text}'  # LLM: vollständig
+            log_user_text = f'↩️ "{reply_msg.text[:80].strip()}" → {raw_user_text}'  # Log: kompakt
+        else:
+            log_user_text = raw_user_text
+
         pending = context.user_data.get("pending_action")
         if pending:
             text_lower = user_text.strip().lower()
@@ -941,9 +1000,9 @@ Nur JSON:"""
                 await self.execute_pending_action(update.message, context, pending)
                 original_answer = pending.get("answer", "")
                 preview_clean   = re.sub(r"<[^>]+>", "", pending.get("preview", "")).strip()
-                self.chat_history.append({"role": "user",      "content": user_text})
+                self.chat_history.append({"role": "user",      "content": raw_user_text})
                 self.chat_history.append({"role": "assistant",  "content": original_answer})
-                self.log_chat(user_text, preview_clean)
+                self.log_chat(log_user_text, preview_clean)
                 return
             if any(text_lower == w or text_lower.startswith(w) for w in NEIN_WORTE):
                 context.user_data.pop("pending_action")
@@ -1094,8 +1153,8 @@ Nur JSON:"""
                 nonlocal last_text
                 if text and text != last_text:
                     try:
-                        pm = 'Markdown' if '```' in text else None
-                        await context.bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=text, parse_mode=pm)
+                        send_text, pm = _prepare_telegram_msg(text)
+                        await context.bot.edit_message_text(chat_id=chat_id, message_id=msg_id, text=send_text, parse_mode=pm)
                         last_text = text
                     except Exception:
                         try:
@@ -1129,16 +1188,16 @@ Nur JSON:"""
             # Finale Antwort sicherstellen — bei Überlänge in mehrere Nachrichten aufteilen
             await self._finalize_message(context, chat_id, msg_id, answer)
 
-            self.chat_history.append({"role": "user",      "content": user_text})
+            self.chat_history.append({"role": "user",      "content": raw_user_text})
             self.chat_history.append({"role": "assistant",  "content": answer})
-            self.memory.add_user(user_text)
+            self.memory.add_user(raw_user_text)
             self.memory.add_assistant(answer)
-            self.log_chat(user_text, answer)
+            self.log_chat(log_user_text, answer)
 
             try:
                 from modules.proactive_brain import update_interests_from_chat
                 update_interests_from_chat([
-                    {"role": "user",      "message": user_text},
+                    {"role": "user",      "message": raw_user_text},
                     {"role": "assistant", "message": answer},
                 ])
             except Exception as e:
@@ -1147,14 +1206,86 @@ Nur JSON:"""
             # mood_timer — Stimmung + Verfügbarkeit aus Nachricht lernen
             try:
                 from modules.mood_timer import on_user_message as _mt_msg
-                _mt_msg(user_text)
+                _mt_msg(raw_user_text)
             except Exception as e:
                 print(f"⚠️ mood_timer: {e}")
 
-            asyncio.create_task(self.learn_from_message(user_text))
+            asyncio.create_task(self.learn_from_message(raw_user_text))
 
         except Exception as e:
             await update.message.reply_text(f"❌ Fehler: {e}")
+
+    # ────────────────────────────────────────────────────────────
+    # EMOJI-REAKTIONEN
+    # ────────────────────────────────────────────────────────────
+    async def handle_reaction(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Verarbeitet Emoji-Reaktionen auf Bot-Nachrichten."""
+        reaction = update.message_reaction
+        if not reaction or not reaction.new_reaction:
+            return
+
+        # Nur Reaktionen auf eigene Nachrichten (Bot) beachten
+        if reaction.actor_chat:
+            return  # Kanal-Reaktion, ignorieren
+
+        try:
+            from telegram import ReactionTypeEmoji
+            emojis = [
+                r.emoji for r in reaction.new_reaction
+                if isinstance(r, ReactionTypeEmoji)
+            ]
+        except ImportError:
+            emojis = [getattr(r, "emoji", "?") for r in reaction.new_reaction]
+
+        if not emojis:
+            return
+
+        emoji_str = " ".join(emojis)
+        chat_id   = reaction.chat.id
+        BOT_NAME  = os.getenv("BOT_NAME", "RICS")
+
+        # Kontext: auf welche Nachricht wurde reagiert?
+        msg_id       = reaction.message_id
+        reacted_text = ""
+        try:
+            # Letzte Antwort aus chat_history holen falls passend
+            for entry in reversed(self.chat_history):
+                if entry.get("role") == "assistant":
+                    reacted_text = entry["content"][:150].strip()
+                    break
+        except Exception:
+            pass
+
+        context_hint = f' auf "{reacted_text}"' if reacted_text else ""
+
+        # Reaktion als user-Nachricht ins Gespräch einbauen
+        reaction_user_msg = f'[Emoji-Reaktion {emoji_str}{context_hint}]'
+
+        # System-Prompt für Reaktionsantwort
+        now_str = self.brain.get_now().strftime("%d.%m.%Y %H:%M") if self.brain else datetime.now().strftime("%d.%m.%Y %H:%M")
+        system_msg = f"""{self.system_prompt}
+
+━━━ AKTUELLE ZEIT: {now_str} ━━━
+
+Der Nutzer hat auf eine deiner Nachrichten mit {emoji_str} reagiert.
+Antworte kurz und natürlich darauf — max. 1-2 Sätze. Kein langer Text."""
+
+        msgs = (
+            [{"role": "system", "content": system_msg}]
+            + self.chat_history[-4:]
+            + [{"role": "user", "content": reaction_user_msg}]
+        )
+
+        try:
+            from core.llm_client import get_client
+            client = get_client()
+            answer = await client.chat_stream(msgs, on_update=lambda t: asyncio.sleep(0))
+            if answer and answer.strip():
+                await context.bot.send_message(chat_id=chat_id, text=answer.strip())
+                self.chat_history.append({"role": "user",      "content": reaction_user_msg})
+                self.chat_history.append({"role": "assistant", "content": answer})
+        except Exception as e:
+            print(f"[reaction] Fehler: {e}")
 
 
 # ════════════════════════════════════════════════════════════════
@@ -1441,8 +1572,9 @@ def main():
     app.add_handler(CommandHandler("vergiss",   vergiss_wrapper))
     app.add_handler(CallbackQueryHandler(action_confirm_callback, pattern=r"^action_confirm:"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, jarvis.chat))
+    app.add_handler(MessageReactionHandler(jarvis.handle_reaction))
 
-    app.run_polling()
+    app.run_polling(allowed_updates=["message", "callback_query", "message_reaction"])
 
 
 if __name__ == "__main__":

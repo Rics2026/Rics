@@ -42,6 +42,9 @@ _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
 from web_orchestrator import orch_blueprint
 app.register_blueprint(orch_blueprint)
 
+from screensaver import screen_blueprint
+app.register_blueprint(screen_blueprint)
+
 
 # ── Globale Instanzen (werden von bot.py via setup() gesetzt) ──────────────
 jarvis_instance = None
@@ -462,6 +465,7 @@ body::before{content:'';position:fixed;inset:0;background:radial-gradient(ellips
   <button class="tab" onclick="switchTab(event,'sett')">Settings</button>
   <button class="tab" onclick="switchTab(event,'kiconf');loadKiConfig()">KI-Config</button>
   <a class="tab" href="/lab" style="text-decoration:none">⚗️ Lab</a>
+  <a class="tab" href="/screen/" style="text-decoration:none">🖥️ Panel</a>
 </div>
 
 <!-- MAIN -->
@@ -2332,7 +2336,18 @@ def chat():
                 now_str = f"{_WDAYS[_t.weekday()]}, {_t.strftime('%d.%m.%Y %H:%M')}"
 
             system_prompt = getattr(jarvis_instance, "system_prompt", "")
-            system_msg = f"""{system_prompt}
+            _web_port = os.getenv("WEB_PORT", "5001")
+            _web_info = (
+                f"\n\n### DEIN WEB-INTERFACE:\n"
+                f"Du bist über ein Browser-Dashboard erreichbar (Port {_web_port}).\n"
+                f"Seiten:\n"
+                f"- /          → Haupt-Dashboard mit Chat, Befehlen & Settings\n"
+                f"- /screen/   → Ambient Info-Panel (Uhr, Wetter, Energie, Agenda, News, Sprit)\n"
+                f"- /lab       → KI-Orchestrator: neue Module bauen, Code-Editor, Brain-Dateien bearbeiten\n"
+                f"Der Nutzer spricht gerade mit dir über genau dieses Web-Interface.\n"
+                f"Wenn er 'das Dashboard', 'das Panel', 'die Seite' oder 'das Web' erwähnt, weißt du was gemeint ist."
+            )
+            system_msg = f"""{system_prompt}{_web_info}
 
 ZEIT: {now_str}
 

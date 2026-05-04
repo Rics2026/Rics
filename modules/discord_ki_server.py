@@ -147,7 +147,11 @@ def _write_log(entry: dict):
     entry.setdefault("kanal", "—")
     path = _daily_log_path()
     try:
-        existing = json.load(open(path, encoding="utf-8")) if os.path.exists(path) else []
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as _f:
+                existing = json.load(_f)
+        else:
+            existing = []
     except Exception:
         existing = []
     existing.append(entry)

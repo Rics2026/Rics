@@ -1,8 +1,2 @@
 Version 3.4
 bot.py
-core/llm_client.py
-modules/proactive_brain.py
-modules/solar.py
-modules/memory_viewer.py
-modules/self_reflection.py
-modules/mood_timer.py

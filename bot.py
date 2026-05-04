@@ -1062,16 +1062,10 @@ Nur JSON:"""
                 # Nur BOT-Zeilen die NICHT vom normalen Chat kommen
                 _bot_events = []
                 for _l in _all_lines:
-                    # BOT: Zeilen mit Event-Emojis
                     if _l.startswith("BOT: ") and any(
                         kw in _l for kw in ["🖨️", "🔋", "⚡", "☀️", "🌡️", "💡", "📊", "✅", "⚠️"]
                     ):
                         _bot_events.append(_l[5:])
-                    # [PUSH] RICS: Zeilen (proaktive Nachrichten)
-                    elif _l.startswith("[PUSH] RICS: ") and any(
-                        kw in _l for kw in ["🖨️", "🔋", "⚡", "☀️", "🌡️", "Druck"]
-                    ):
-                        _bot_events.append(_l[13:])
                 if _bot_events:
                     tageslog_section = (
                         "\n### HEUTIGE EREIGNISSE (Drucker, Solar, System-Events):\n"
@@ -1086,7 +1080,7 @@ Nur JSON:"""
 ━━━ AKTUELLE ZEIT: {now_str} ━━━
 (Diese Zeit ist verbindlich — verwende sie für alle zeitbezogenen Aussagen.)
 
-{personal_text}{brain_section}{memory_section}{brain_file_section}{discord_section}{energie_section}{web_wissen_section}{ki_server_section}{tageslog_section}"""
+{personal_text}{tageslog_section}{brain_section}{memory_section}{brain_file_section}{discord_section}{energie_section}{web_wissen_section}{ki_server_section}"""
 
         msgs = (
             [{"role": "system", "content": system_msg}]

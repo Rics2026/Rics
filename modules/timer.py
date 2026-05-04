@@ -32,18 +32,26 @@ async def _timer_fire(context: ContextTypes.DEFAULT_TYPE):
     timers = context.application.bot_data.get("timers", {})
     timers.pop(job_name, None)
 
-    await context.bot.send_message(
-        chat_id=chat_id,
-        text=f"⏰ *{label}* ist fertig!",
-        parse_mode="Markdown"
-    )
-
-    # Web-Push (optional, kein Fehler wenn nicht vorhanden)
+    # Telegram senden — schlägt fehl wenn chat_id vom Web-Interface kommt
     try:
-        from modules.web_app import web_push
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"⏰ *{label}* ist fertig!",
+            parse_mode="Markdown"
+        )
+    except Exception:
+        pass  # Web-Chat hat keine Telegram-chat_id — web_push übernimmt
+
+    # Web-Push — immer versuchen (Fallback + gleichzeitige Benachrichtigung)
+    try:
+        from web_app import web_push
         web_push(f"⏰ {label} ist fertig!")
     except Exception:
-        pass
+        try:
+            from modules.web_app import web_push
+            web_push(f"⏰ {label} ist fertig!")
+        except Exception:
+            pass
 
 
 # ─────────────────────────────────────────────
@@ -205,4 +213,3 @@ def setup(app):
     app.add_handler(CommandHandler("timer_list",  timer_list))
     app.add_handler(CommandHandler("timer_stop",  timer_stop))
     app.add_handler(CallbackQueryHandler(timer_stop_callback, pattern=r"^timer_stop:"))
-    

@@ -1,4 +1,6 @@
-Update 3.5
+Update 3.6
 - bot.py   
   - Bot Reagiert jetzt auch Telegram Antworten 
   - Bot Reagiert auf Emoticons auf Nachichten 
+- screensaver.py - Webinterface erweitert durch Screensaver Panel
+- behavior_engine.py - ein Modul was deinem Bot angewohnheiten bei bringt

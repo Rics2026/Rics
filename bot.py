@@ -1104,15 +1104,7 @@ Nur JSON:"""
                     )
         except Exception:
             pass
-
-        # ── Direktive erkennen & sofort speichern (vor LLM-Aufruf) ──
-        try:
-            from modules.behavior_engine import detect_and_store_directive as _detect_dir
-            _detect_dir(raw_user_text)
-        except Exception:
-            pass
-
-        # ── Verhaltens-Profil (adaptiv + Direktregeln) ───────────────
+        # ── Verhaltens-Profil (gelernt + Direktregeln) ─────────────
         behavior_section = ""
         try:
             from modules.behavior_engine import get_behavior_section
@@ -1207,14 +1199,6 @@ Nur JSON:"""
                 print(f"⚠️ mood_timer: {e}")
 
             asyncio.create_task(self.learn_from_message(raw_user_text))
-
-            # ── Verhaltens-Engine: Muster aus diesem Austausch lernen ──
-            try:
-                from modules.behavior_engine import analyze_exchange as _analyze_beh
-                asyncio.create_task(asyncio.to_thread(_analyze_beh, raw_user_text, answer))
-            except Exception as e:
-                print(f"⚠️ behavior_engine: {e}")
-
         except Exception as e:
             await update.message.reply_text(f"❌ Fehler: {e}")
 

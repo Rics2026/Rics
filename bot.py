@@ -470,15 +470,6 @@ class VectorMemory:
 # TELEGRAM-NACHRICHTEN HELPER
 # ════════════════════════════════════════════════════════════════
 def _prepare_telegram_msg(text: str) -> tuple:
-    """
-    Wandelt Markdown-Formatierung in Telegram-HTML um.
-    Gibt (send_text, parse_mode) zurück.
-
-    Warum HTML statt legacy-Markdown für Code-Blöcke:
-    Legacy-Markdown bricht bei Unicode-Sonderzeichen (Boxzeichen, ←→ usw.)
-    innerhalb von ```-Blöcken → safe_send fällt auf plain zurück → rohe Backticks.
-    HTML-<pre> ist dagegen immun gegen beliebige Zeichen im Inhalt.
-    """
     has_codeblock   = '```' in text
     has_bold        = '**' in text
     has_inline_code = re.search(r'`[^`\n]+`', text) is not None
@@ -487,28 +478,21 @@ def _prepare_telegram_msg(text: str) -> tuple:
         return text, None
 
     if not has_codeblock:
-        # Kein mehrzeiliger Code-Block → legacy Markdown reicht
         return text, 'Markdown'
 
-    # ── Code-Blöcke vorhanden → alles nach HTML konvertieren ──
-    # Split an ```lang\n...``` Blöcken; ungerade Indizes = Block-Inhalt
     parts = re.split(r'```(?:\w*)\n?(.*?)```', text, flags=re.DOTALL)
 
     if len(parts) == 1:
-        # Kein geschlossener Block (noch mitten im Stream) → plain
         return text, None
 
     result = []
     for i, part in enumerate(parts):
         if i % 2 == 0:
-            # Normaler Text: escapen, dann **bold** und `code` umwandeln
-            # quote=False: " bleibt ", Telegram kennt &quot; nicht
             escaped = html.escape(part, quote=False)
             escaped = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', escaped, flags=re.DOTALL)
             escaped = re.sub(r'`([^`\n]+)`', r'<code>\1</code>', escaped)
             result.append(escaped)
         else:
-            # Code-Block-Inhalt: nur escapen, in <pre> wrappen
             result.append(f'<pre>{html.escape(part, quote=False)}</pre>')
 
     return ''.join(result), 'HTML'
@@ -659,7 +643,6 @@ Nur JSON:"""
     # ────────────────────────────────────────────────────────────
     @staticmethod
     def _split_message(text: str, max_len: int = 4000) -> list:
-        """Teilt langen Text sauber an Zeilenumbrüchen in Telegram-taugliche Chunks."""
         chunks = []
         while len(text) > max_len:
             split_at = text.rfind('\n', 0, max_len)
@@ -672,10 +655,8 @@ Nur JSON:"""
         return chunks
 
     async def _finalize_message(self, context, chat_id: int, msg_id: int, text: str):
-        """Editiert Placeholder mit erstem Chunk; bei Überlänge folgen weitere Nachrichten."""
         send_text, pm = _prepare_telegram_msg(text)
         chunks = self._split_message(send_text)
-        # Ersten Chunk → Placeholder editieren
         for parse_mode in (pm, None):
             try:
                 await context.bot.edit_message_text(
@@ -685,10 +666,9 @@ Nur JSON:"""
                 break
             except Exception as e:
                 if "message is not modified" in str(e).lower():
-                    break  # on_update hat bereits denselben Text gesetzt → kein Fallback
+                    break
                 if parse_mode is None:
                     pass
-        # Weitere Chunks → neue Nachrichten
         for chunk in chunks[1:]:
             for parse_mode in (pm, None):
                 try:
@@ -742,7 +722,6 @@ Nur JSON:"""
     # ────────────────────────────────────────────────────────────
 
     def _detect_action(self, answer: str, context) -> dict | None:
-        # ── TERMIN_ADD ───────────────────────────────────────────
         if (re.search(r'(?m)^\s*ACTION:\s*TERMIN_ADD\s*$', answer) and
                 re.search(r'(?m)^\s*DATE:\s*.+', answer) and
                 re.search(r'(?m)^\s*TEXT:\s*.+', answer)):
@@ -756,7 +735,6 @@ Nur JSON:"""
                 "preview": f"📅 <b>Termin eintragen</b>\n📌 {html.escape(txt)}\n🕐 {html.escape(d)} {html.escape(t)}",
             }
 
-        # ── DISCORD_MESSAGE ──────────────────────────────────────
         if (re.search(r'(?m)^\s*ACTION:\s*DISCORD_MESSAGE\s*$', answer) and
                 re.search(r'(?m)^\s*CHANNEL:\s*.+', answer) and
                 re.search(r'(?m)^\s*MESSAGE:\s*.+', answer)):
@@ -775,7 +753,6 @@ Nur JSON:"""
                             f"✉️ {html.escape(display)}"),
             }
 
-        # ── DISCORD_KI_MESSAGE ────────────────────────────────────
         if (re.search(r'(?m)^\s*ACTION:\s*DISCORD_KI_MESSAGE\s*$', answer) and
                 re.search(r'(?m)^\s*CHANNEL:\s*.+', answer) and
                 re.search(r'(?m)^\s*MESSAGE:\s*.+', answer)):
@@ -791,7 +768,6 @@ Nur JSON:"""
                             f"✉️ {html.escape(msg_txt)}"),
             }
 
-        # ── CUSTOM ACTIONS ────────────────────────────────────────
         if context:
             for ca in _load_custom_actions():
                 action_name = ca.get("action", "").strip().upper()
@@ -854,7 +830,6 @@ Nur JSON:"""
         action_type = pending.get("type")
         answer      = pending.get("answer", "")
 
-        # ── TERMIN_ADD ───────────────────────────────────────────
         if action_type == "TERMIN_ADD":
             try:
                 d       = re.search(r"DATE:\s*(.*)", answer, re.I).group(1).split('\n')[0].strip()
@@ -870,7 +845,6 @@ Nur JSON:"""
             except Exception as e:
                 await message.reply_text(f"❌ Termin-Fehler: {e}")
 
-        # ── DISCORD_MESSAGE ──────────────────────────────────────
         elif action_type == "DISCORD_MESSAGE":
             try:
                 ch_m  = re.search(r"CHANNEL:\s*(#?\S+)", answer, re.I)
@@ -913,7 +887,6 @@ Nur JSON:"""
             except Exception as e:
                 await message.reply_text(f"❌ Discord Fehler: {e}")
 
-        # ── DISCORD_KI_MESSAGE ───────────────────────────────────
         elif action_type == "DISCORD_KI_MESSAGE":
             try:
                 ch_m  = re.search(r"CHANNEL:\s*(#?\S+)", answer, re.I)
@@ -934,7 +907,6 @@ Nur JSON:"""
             except Exception as e:
                 await message.reply_text(f"❌ KI-Server Fehler: {e}")
 
-        # ── CUSTOM ACTION ────────────────────────────────────────
         elif action_type == "CUSTOM":
             ca          = pending.get("custom_action", {})
             param_value = pending.get("param_value", "")
@@ -975,13 +947,8 @@ Nur JSON:"""
         if not user_text:
             return
 
-        # raw_user_text → für memory/learn (unverändert wie eingegeben)
         raw_user_text = user_text
 
-        # ── Reply-Kontext ──────────────────────────────────────
-        # user_text    → LLM (vollständiger Kontext, 300 Zeichen Zitat)
-        # log_user_text → Log (kompakte Darstellung mit ↩️-Prefix)
-        # raw_user_text → memory/mood/learn (unverändert)
         reply_msg = update.message.reply_to_message
         if reply_msg and reply_msg.text:
             quoted = reply_msg.text[:300].strip()
@@ -1071,7 +1038,6 @@ Nur JSON:"""
         brain_section  = f"\n### BRAIN:\n{brain_data}"        if brain_data and brain_data != "KEINE DATEN" else ""
         memory_section = f"\n### GEDÄCHTNIS:\n{past_context}" if past_context else ""
 
-        # KI-Server Action-Hint — nur wenn discord_ki_server geladen ist
         ki_server_section = ""
         try:
             from modules.discord_ki_server import ALLOWED_GUILD_ID as _ki_guild
@@ -1089,13 +1055,11 @@ Nur JSON:"""
         except ImportError:
             pass
 
-        # ── Web-Wissen aus lernmodul ────────────────────────────
         web_wissen_section = ""
         try:
             from modules.lernmodul import search_web_knowledge, _load_state
             _wissen = search_web_knowledge(user_text, n=3)
 
-            # Lern-Summary immer dabei (was wurde heute gelernt)
             _state = _load_state()
             _last = _state.get("last_learned", {})
             _heute = []
@@ -1117,7 +1081,6 @@ Nur JSON:"""
                 web_wissen_section = "\n### WEB-WISSEN:\n" + "\n".join(parts)
         except Exception:
             pass
-        # ────────────────────────────────────────────────────────
 
         # ── Tages-Log Kontext (BOT-Ereignisse wie Drucker, Solar etc.) ──
         tageslog_section = ""
@@ -1127,7 +1090,6 @@ Nur JSON:"""
             if os.path.exists(_log_path):
                 with open(_log_path, "r", encoding="utf-8") as _lf:
                     _all_lines = _lf.read().splitlines()
-                # Nur BOT-Zeilen die NICHT vom normalen Chat kommen
                 _bot_events = []
                 for _l in _all_lines:
                     if _l.startswith("BOT: ") and any(
@@ -1143,12 +1105,27 @@ Nur JSON:"""
         except Exception:
             pass
 
+        # ── Direktive erkennen & sofort speichern (vor LLM-Aufruf) ──
+        try:
+            from modules.behavior_engine import detect_and_store_directive as _detect_dir
+            _detect_dir(raw_user_text)
+        except Exception:
+            pass
+
+        # ── Verhaltens-Profil (adaptiv + Direktregeln) ───────────────
+        behavior_section = ""
+        try:
+            from modules.behavior_engine import get_behavior_section
+            behavior_section = get_behavior_section()
+        except Exception:
+            pass
+
         system_msg = f"""{self.system_prompt}
 
 ━━━ AKTUELLE ZEIT: {now_str} ━━━
 (Diese Zeit ist verbindlich — verwende sie für alle zeitbezogenen Aussagen.)
 
-{personal_text}{tageslog_section}{brain_section}{memory_section}{brain_file_section}{discord_section}{energie_section}{web_wissen_section}{ki_server_section}"""
+{personal_text}{tageslog_section}{brain_section}{memory_section}{brain_file_section}{discord_section}{energie_section}{web_wissen_section}{ki_server_section}{behavior_section}"""
 
         msgs = (
             [{"role": "system", "content": system_msg}]
@@ -1206,7 +1183,6 @@ Nur JSON:"""
                         pass
                 return
 
-            # Finale Antwort sicherstellen
             await self._finalize_message(context, chat_id, msg_id, answer)
 
             self.chat_history.append({"role": "user",      "content": raw_user_text})
@@ -1224,7 +1200,6 @@ Nur JSON:"""
             except Exception as e:
                 print(f"⚠️ update_interests: {e}")
 
-            # mood_timer — Stimmung + Verfügbarkeit aus Nachricht lernen
             try:
                 from modules.mood_timer import on_user_message as _mt_msg
                 _mt_msg(raw_user_text)
@@ -1233,6 +1208,13 @@ Nur JSON:"""
 
             asyncio.create_task(self.learn_from_message(raw_user_text))
 
+            # ── Verhaltens-Engine: Muster aus diesem Austausch lernen ──
+            try:
+                from modules.behavior_engine import analyze_exchange as _analyze_beh
+                asyncio.create_task(asyncio.to_thread(_analyze_beh, raw_user_text, answer))
+            except Exception as e:
+                print(f"⚠️ behavior_engine: {e}")
+
         except Exception as e:
             await update.message.reply_text(f"❌ Fehler: {e}")
 
@@ -1240,14 +1222,12 @@ Nur JSON:"""
     # EMOJI-REAKTIONEN
     # ────────────────────────────────────────────────────────────
     async def handle_reaction(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Verarbeitet Emoji-Reaktionen auf Bot-Nachrichten."""
         reaction = update.message_reaction
         if not reaction or not reaction.new_reaction:
             return
 
-        # Nur Reaktionen auf eigene Nachrichten (Bot) beachten
         if reaction.actor_chat:
-            return  # Kanal-Reaktion, ignorieren
+            return
 
         try:
             from telegram import ReactionTypeEmoji
@@ -1264,7 +1244,6 @@ Nur JSON:"""
         emoji_str = " ".join(emojis)
         chat_id   = reaction.chat.id
 
-        # Kontext: letzte Bot-Antwort als Bezug
         reacted_text = ""
         try:
             for entry in reversed(self.chat_history):

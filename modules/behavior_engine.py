@@ -407,39 +407,43 @@ def detect_directive(user_msg: str) -> str | None:
     """
     Erkennt explizite Verhaltensanweisungen in einer User-Nachricht.
     Gibt den bereinigten Regeltext zurück, oder None wenn keine Direktive erkannt.
-
-    Wird von bot.py VOR dem LLM-Aufruf ausgeführt — damit RICS die
-    neue Regel bereits in seiner Antwort bestätigen kann.
     """
     low = user_msg.lower().strip()
 
     # Trigger-Phrase erkannt?
-    found = any(trigger in low for trigger in _DIRECTIVE_TRIGGERS)
-    if not found:
+    found_trigger = None
+    for trigger in _DIRECTIVE_TRIGGERS:
+        if trigger in low:
+            found_trigger = trigger
+            break
+    if not found_trigger:
         return None
 
-    # Duplikat-Schutz: wenn sehr ähnliche Regel schon existiert → überspringen
-    existing = list_manual_rules()
-    for r in existing:
-        # Einfacher Overlap-Check: mehr als 60% der Wörter übereinstimmend
-        existing_words = set(r["text"].lower().split())
-        new_words      = set(user_msg.lower().split())
-        if len(existing_words) > 0:
-            overlap = len(existing_words & new_words) / len(existing_words)
-            if overlap > 0.6:
-                return None  # schon gespeichert, nicht doppeln
+    # Regeltext = alles NACH dem Trigger-Ausdruck
+    trigger_pos = low.find(found_trigger)
+    rule_text = user_msg[trigger_pos + len(found_trigger):].strip()
 
-    # Regeltext bereinigen: Trigger-Präfix abschneiden wenn möglich
-    rule_text = user_msg.strip()
+    # Führende Füllwörter abschneiden (z.B. "du", "dass du", "bitte")
     for strip in _TRIGGER_STRIP:
-        if rule_text.lower().startswith(strip):
-            rule_text = rule_text[len(strip):].strip()
-            # Ersten Buchstaben groß
-            rule_text = rule_text[0].upper() + rule_text[1:] if rule_text else rule_text
+        if rule_text.lower().startswith(strip.strip()):
+            rule_text = rule_text[len(strip.strip()):].strip()
             break
 
     if len(rule_text) < 5:
         return None
+
+    # Ersten Buchstaben groß
+    rule_text = rule_text[0].upper() + rule_text[1:]
+
+    # Duplikat-Schutz
+    existing = list_manual_rules()
+    for r in existing:
+        existing_words = set(r["text"].lower().split())
+        new_words      = set(rule_text.lower().split())
+        if len(existing_words) > 0:
+            overlap = len(existing_words & new_words) / len(existing_words)
+            if overlap > 0.6:
+                return None
 
     return rule_text
 

@@ -235,6 +235,23 @@ async def cmd_verhalten(update: Update, context: ContextTypes.DEFAULT_TYPE):
     last  = meta.get("last_analysis", "—")
     total = meta.get("total_analyses", 0)
     lines.append(f"_Analysen: {total} | Letzte: {str(last)[:16]}_")
+
+    # Nächste automatische Analyse
+    if last and last != "—":
+        try:
+            last_dt  = datetime.fromisoformat(last).astimezone(TIMEZONE)
+            next_dt  = last_dt.replace(hour=last_dt.hour) 
+            from datetime import timedelta
+            next_dt  = last_dt + timedelta(hours=ANALYSE_INTERVAL_H)
+            diff_sec = (next_dt - _now()).total_seconds()
+            if diff_sec > 0:
+                h = int(diff_sec // 3600)
+                m = int((diff_sec % 3600) // 60)
+                lines.append(f"_Nächste Analyse in {h}h {m}min ({next_dt.strftime('%H:%M Uhr')})_")
+            else:
+                lines.append("_Nächste Analyse: läuft beim nächsten Zyklus_")
+        except Exception:
+            pass
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 cmd_verhalten.description = "Zeigt das gelernte Verhaltens-Profil"

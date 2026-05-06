@@ -375,7 +375,9 @@ class PersonalMemory:
             if _gf.exists():
                 _gd = _j.loads(_gf.read_text())
                 if _gd.get("aktiv") and _gd.get("adresse"):
-                    lines.append(f"Aktueller Standort: {_gd['adresse']} (GPS, {_gd.get('letzter_abruf','?')})")
+                    _ort = _gd.get("ort_name")
+                    _ort_str = f" [{_ort}]" if _ort else ""
+                    lines.append(f"Aktueller Standort: {_gd['adresse']}{_ort_str} (GPS, {_gd.get('letzter_abruf','?')})")
         except Exception:
             pass
 
@@ -1133,7 +1135,7 @@ Nur JSON:"""
 
         msgs = (
             [{"role": "system", "content": system_msg}]
-            + self.chat_history[-15:]
+            + self.chat_history[-6:]
             + [{"role": "user", "content": user_text}]
         )
 
@@ -1262,7 +1264,7 @@ Antworte kurz und natürlich darauf — max. 1-2 Sätze. Kein langer Text."""
 
         msgs = (
             [{"role": "system", "content": system_msg}]
-            + self.chat_history[-15:]
+            + self.chat_history[-4:]
             + [{"role": "user", "content": reaction_user_msg}]
         )
 

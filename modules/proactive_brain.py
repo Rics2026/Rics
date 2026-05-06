@@ -801,22 +801,22 @@ async def autonomous_thinker(context: ContextTypes.DEFAULT_TYPE):
     now_ts       = now.timestamp()
 
     # GPS-Standort laden
-    gps_adresse    = None
-    gps_unterwegs  = False
+    gps_kontext   = {}
+    standort_str  = f"Heimatort: {wohnort}"
+    unterwegs_str = "zuhause"
     try:
-        _gf = os.path.join(PROJECT_DIR, "memory", "gps.json")
-        if os.path.exists(_gf):
-            with open(_gf, "r") as _gfh:
-                _gd = json.load(_gfh)
-            if _gd.get("aktiv") and _gd.get("adresse"):
-                gps_adresse   = _gd["adresse"]
-                _heimat       = os.getenv("WOHNORT", "").lower()
-                gps_unterwegs = _heimat not in gps_adresse.lower()
+        from modules.gps import get_standort_kontext
+        gps_kontext = get_standort_kontext()
+        if gps_kontext.get("adresse"):
+            ort_name = gps_kontext.get("ort_name")
+            if ort_name:
+                standort_str  = f"Aktueller Standort: {gps_kontext['adresse']} ({ort_name})"
+                unterwegs_str = ort_name
+            else:
+                standort_str  = f"Aktueller Standort: {gps_kontext['adresse']}"
+                unterwegs_str = "unterwegs (unbekannter Ort)"
     except Exception:
         pass
-
-    standort_str = f"Aktueller Standort: {gps_adresse}" if gps_adresse else f"Heimatort: {wohnort}"
-    unterwegs_str = "unterwegs" if gps_unterwegs else "zuhause"
 
     # Interessen lernen + Stimmung erkennen
     update_interests_from_chat(recent_chat)

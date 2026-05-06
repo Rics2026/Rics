@@ -1,5 +1,5 @@
 # gps.py - RICS GPS / Live-Location-Modul
-# Befehle: /gps_start, /gps_stop, /gps_status
+# Befehle: /gps_start, /gps_stop, /gps_status, /gps_merke <name>, /gps_orte
 #
 # Benoetigt in bot.py (eine Zeile aendern):
 #   app.run_polling(allowed_updates=[
@@ -9,6 +9,7 @@
 import os
 import json
 import html
+import math
 import httpx
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -22,6 +23,9 @@ TIMEZONE    = ZoneInfo(os.getenv("TIMEZONE", "Europe/Berlin"))
 MEMORY_FILE = Path(__file__).parent.parent / "memory" / "gps.json"
 CHAT_ID     = int(os.getenv("CHAT_ID", "0"))
 
+# Radius in Metern um einen bekannten Ort damit er als "dort" gilt
+MATCH_RADIUS_M = 150
+
 # ─────────────────────────────────────────────────────────────
 # STATE
 # ─────────────────────────────────────────────────────────────
@@ -32,12 +36,79 @@ def _load() -> dict:
             return json.loads(MEMORY_FILE.read_text())
         except Exception:
             pass
-    return {"aktiv": False, "lat": None, "lng": None, "adresse": None, "letzter_abruf": None}
+    return {
+        "aktiv":          False,
+        "lat":            None,
+        "lng":            None,
+        "adresse":        None,
+        "letzter_abruf":  None,
+        "ort_name":       None,   # z.B. "zuhause", "arbeitsplatz"
+        "bekannte_orte":  {},     # {"zuhause": {"adresse":..,"lat":..,"lng":..}, ...}
+    }
 
 
 def _save(data: dict):
     MEMORY_FILE.parent.mkdir(parents=True, exist_ok=True)
     MEMORY_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+
+
+# ─────────────────────────────────────────────────────────────
+# HILFSFUNKTIONEN
+# ─────────────────────────────────────────────────────────────
+
+def _distanz_m(lat1: float, lng1: float, lat2: float, lng2: float) -> float:
+    """Haversine-Abstand in Metern."""
+    R = 6371000
+    p = math.pi / 180
+    a = (math.sin((lat2 - lat1) * p / 2) ** 2 +
+         math.cos(lat1 * p) * math.cos(lat2 * p) *
+         math.sin((lng2 - lng1) * p / 2) ** 2)
+    return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+
+def _finde_ort(lat: float, lng: float, bekannte_orte: dict) -> str | None:
+    """Gibt den Namen des naechstgelegenen bekannten Ortes zurueck (wenn < MATCH_RADIUS_M)."""
+    best_name = None
+    best_dist = float("inf")
+    for name, ort in bekannte_orte.items():
+        if ort.get("lat") is None or ort.get("lng") is None:
+            continue
+        d = _distanz_m(lat, lng, ort["lat"], ort["lng"])
+        if d < best_dist:
+            best_dist = d
+            best_name = name
+    if best_dist <= MATCH_RADIUS_M:
+        return best_name
+    return None
+
+
+# ─────────────────────────────────────────────────────────────
+# OEFFENTLICHE HILFSFUNKTION fuer andere Module
+# ─────────────────────────────────────────────────────────────
+
+def get_standort_kontext() -> dict:
+    """
+    Gibt einen Dict zurueck den proactive_brain und andere Module nutzen koennen:
+    {
+        "adresse":    "Weichselstrasse, Toeging am Inn, Bayern",
+        "ort_name":   "zuhause" | "arbeitsplatz" | None,
+        "unterwegs":  True | False,
+        "lat":        48.263,
+        "lng":        12.598,
+        "letzter_abruf": "06.05.2026 18:27:43"
+    }
+    """
+    data = _load()
+    if not data.get("aktiv") or not data.get("adresse"):
+        return {}
+    return {
+        "adresse":       data.get("adresse"),
+        "ort_name":      data.get("ort_name"),
+        "unterwegs":     data.get("ort_name") not in ("zuhause", None) if data.get("ort_name") else True,
+        "lat":           data.get("lat"),
+        "lng":           data.get("lng"),
+        "letzter_abruf": data.get("letzter_abruf"),
+    }
 
 
 # ─────────────────────────────────────────────────────────────
@@ -73,12 +144,21 @@ async def _verarbeite(lat: float, lng: float, bot, msg_id: int | None = None):
     if not data.get("aktiv"):
         return
 
-    adresse = await _reverse_geocode(lat, lng)
-    jetzt   = datetime.now(TIMEZONE).strftime("%d.%m.%Y %H:%M:%S")
+    adresse  = await _reverse_geocode(lat, lng)
+    jetzt    = datetime.now(TIMEZONE).strftime("%d.%m.%Y %H:%M:%S")
+    ort_name = _finde_ort(lat, lng, data.get("bekannte_orte", {}))
 
-    data.update({"lat": lat, "lng": lng, "adresse": adresse, "letzter_abruf": jetzt})
+    data.update({
+        "lat":           lat,
+        "lng":           lng,
+        "adresse":       adresse,
+        "letzter_abruf": jetzt,
+        "ort_name":      ort_name,
+    })
     _save(data)
-    print(f"[GPS] {adresse} ({lat:.5f}, {lng:.5f})")
+
+    ort_info = f" [{ort_name}]" if ort_name else ""
+    print(f"[GPS] {adresse}{ort_info} ({lat:.5f}, {lng:.5f})")
 
     # Initiale Location-Bubble loeschen
     if msg_id:
@@ -145,30 +225,101 @@ cmd_gps_stop.category    = "GPS"
 
 
 async def cmd_gps_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    data    = _load()
-    lat     = data.get("lat")
-    lng     = data.get("lng")
-    adresse = data.get("adresse") or "noch kein Standort"
-    letzter = data.get("letzter_abruf") or "noch kein Abruf"
-    aktiv   = "Aktiv" if data.get("aktiv") else "Deaktiviert"
-    coords  = f"{lat:.5f}, {lng:.5f}" if (lat is not None and lng is not None) else "unbekannt"
-    maps    = (
+    data     = _load()
+    lat      = data.get("lat")
+    lng      = data.get("lng")
+    adresse  = data.get("adresse") or "noch kein Standort"
+    letzter  = data.get("letzter_abruf") or "noch kein Abruf"
+    aktiv    = "Aktiv" if data.get("aktiv") else "Deaktiviert"
+    ort_name = data.get("ort_name")
+    coords   = f"{lat:.5f}, {lng:.5f}" if (lat is not None and lng is not None) else "unbekannt"
+    maps     = (
         f'<a href="https://maps.google.com/?q={lat},{lng}">Google Maps</a>'
         if (lat is not None and lng is not None) else "kein Standort"
     )
+    ort_zeile = f"\nErkannter Ort: <b>{html.escape(ort_name)}</b>" if ort_name else ""
+
+    bekannte = data.get("bekannte_orte", {})
+    orte_zeile = ""
+    if bekannte:
+        orte_zeile = "\n\n<b>Bekannte Orte:</b>\n" + "\n".join(
+            f"  {html.escape(n)}: {html.escape(o.get('adresse', '?'))}"
+            for n, o in bekannte.items()
+        )
+
     text = (
         f"<b>GPS-Status</b>\n\n"
         f"Tracking: {aktiv}\n\n"
         f"<b>Letzter Standort:</b>\n"
         f"{html.escape(adresse)}\n"
         f"<code>{coords}</code>\n"
-        f"{maps}\n\n"
+        f"{maps}"
+        f"{ort_zeile}\n\n"
         f"Letzter Abruf: {html.escape(letzter)}"
+        f"{orte_zeile}"
     )
     await update.message.reply_text(text, parse_mode="HTML", disable_web_page_preview=True)
 
-cmd_gps_status.description = "Letzten Standort anzeigen"
+cmd_gps_status.description = "Letzten Standort und bekannte Orte anzeigen"
 cmd_gps_status.category    = "GPS"
+
+
+async def cmd_gps_merke(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Speichert den aktuellen Standort unter einem frei waehlbaren Namen."""
+    args = context.args
+    if not args:
+        await update.message.reply_text(
+            "Bitte einen Namen angeben.\nBeispiel: /gps_merke arbeitsplatz"
+        )
+        return
+
+    name = " ".join(args).lower().strip()
+    data = _load()
+
+    if not data.get("lat") or not data.get("lng"):
+        await update.message.reply_text("Noch kein GPS-Standort vorhanden.")
+        return
+
+    bekannte = data.setdefault("bekannte_orte", {})
+    bekannte[name] = {
+        "adresse": data["adresse"],
+        "lat":     data["lat"],
+        "lng":     data["lng"],
+        "gespeichert": datetime.now(TIMEZONE).strftime("%d.%m.%Y %H:%M"),
+    }
+    _save(data)
+
+    await update.message.reply_text(
+        f"Gespeichert: <b>{html.escape(name)}</b>\n{html.escape(data['adresse'])}",
+        parse_mode="HTML"
+    )
+
+cmd_gps_merke.description = "Aktuellen Standort merken — /gps_merke arbeitsplatz"
+cmd_gps_merke.category    = "GPS"
+
+
+async def cmd_gps_orte(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Listet alle gespeicherten Orte auf."""
+    data     = _load()
+    bekannte = data.get("bekannte_orte", {})
+
+    if not bekannte:
+        await update.message.reply_text(
+            "Noch keine Orte gespeichert.\nMit /gps_merke <name> einen Ort speichern."
+        )
+        return
+
+    lines = ["<b>Bekannte Orte:</b>\n"]
+    for name, ort in bekannte.items():
+        lines.append(
+            f"<b>{html.escape(name)}</b>\n"
+            f"  {html.escape(ort.get('adresse', '?'))}\n"
+            f"  gespeichert: {ort.get('gespeichert', '?')}\n"
+        )
+    await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+
+cmd_gps_orte.description = "Alle gespeicherten Orte anzeigen"
+cmd_gps_orte.category    = "GPS"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -179,6 +330,8 @@ def setup(app: Application):
     app.add_handler(CommandHandler("gps_start",  cmd_gps_start))
     app.add_handler(CommandHandler("gps_stop",   cmd_gps_stop))
     app.add_handler(CommandHandler("gps_status", cmd_gps_status))
+    app.add_handler(CommandHandler("gps_merke",  cmd_gps_merke))
+    app.add_handler(CommandHandler("gps_orte",   cmd_gps_orte))
     app.add_handler(MessageHandler(filters.LOCATION, handle_location))
     app.add_handler(MessageHandler(
         filters.UpdateType.EDITED_MESSAGE & filters.LOCATION,

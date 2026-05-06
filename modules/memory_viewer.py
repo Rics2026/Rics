@@ -113,42 +113,48 @@ async def _cleanup_personal(update: Update):
         created = f.get("created", f.get("updated", ""))[:10]
         fakten_lines.append(f'  ID {f["id"]}: {f["key"]} = "{f["value"]}" ({created})')
 
-    prompt = f"""Du analysierst gespeicherte persoenliche Fakten eines Nutzers.
-Deine Aufgabe: Finde NUR eindeutigen Datenmüll. Im Zweifel BEHALTEN.
+    prompt = f"""Du bereinigst gespeicherte persoenliche Fakten eines Nutzers. Sei AKTIV – loeschen ist erwuenscht wenn es sinnvoll ist.
 
-NUR loeschen wenn EINDEUTIG einer dieser Faelle zutrifft:
+LOESCHEN bei einem dieser Faelle:
 
 1. MOMENTZUSTAND — beschreibt was gerade passiert, nicht dauerhaft:
-   Beispiele: "in der Wanne liegen", "saufen", "Mittagspause gleich", "Frau hat Trockner an", "Wetter schoen", "Stimmung pure Freude", "anstrengende letzte 2 Tage"
+   Beispiele: "in der Wanne liegen", "Mittagspause gleich", "Frau hat Trockner an", "Stimmung pure Freude"
 
 2. TECHNISCHE NOTIZ — interne Bot-Daten ohne persoenlichen Wert:
-   Beispiele: "fakten im brain: 5", "mission erledigt: vorhin", "module: 2 Module im Labor", "code angepasst: gestern", "drucker_status: Anzeige im Programm"
+   Beispiele: "fakten im brain: 5", "mission erledigt: vorhin", "module: 2 Module im Labor", "drucker_status: Anzeige"
+   AUCH: Eintraege wie "Vorschlag: ...", "Aktivitaet: ...", "Keine persoenlichen infos: True"
 
-3. VERGANGENES EREIGNIS — klar abgeschlossene Einmaligkeit:
-   Beispiele: "geburtstag: Heute", "Mittagspause: gleich", "feiertag: Tag der Arbeit", "bestellung: 2 bestellt" (wenn eindeutig erledigt)
+3. VERGANGENES EREIGNIS — eindeutig abgeschlossen:
+   Beispiele: "geburtstag: Heute", "Mittagspause: gleich", "feiertag: Tag der Arbeit"
 
-4. SINNLOSER EINTRAG — kein erkennbarer Informationswert:
-   Beispiele: "kuehlschrank: a, x, b", "drucker: typ", "status: zweite", "arbeit: Arbeit", "ausnahme: Freitag"
+4. SINNLOSER EINTRAG — kein Informationswert:
+   Beispiele: "arbeit: Arbeit", "status: zweite", "Frau: vorhanden", "ausnahme: Freitag"
 
-ABSOLUT NIEMALS loeschen (auch wenn sie vage wirken):
-- Beruf, Job, Arbeitgeber, Arbeitszeit, Arbeitsort, Arbeitstag, Arbeitstage, Arbeit Start
-- Gehalt, Einkommen, Sparbetrag, Sparmethode
-- Berufsziel, Hobby, Neues Hobby, Aufgabe
-- Name, Wohnort, Pseudonym, Dialekt
-- Partner, Familie, Kinder, Freunde (mit oder ohne Namen)
-- Auto, Wohnform, Stromquelle, Geraet
-- Urlaubsort, Urlaubsaktivitaet
-- Routinen: Morgenroutine, Abendroutine, Nachtroutine, Aufstehzeit, Feierabend
-- Trinkgewohnheiten, Trinkkontext, Rauchen
-- Antwortverhalten, Praeferenzen des Nutzers
-- Gitarrenlehrer, Gitarrenunterricht
+5. DUPLIKAT — gleicher Inhalt wie ein anderer Eintrag, nur anders formuliert:
+   → Behalte den NEUEREN (hoehere ID oder spaeteres Datum). Loesche den AELTEREN.
+   Beispiele fuer Duplikate:
+   - "Arbeitszeit: 4 Stunden pro Woche" UND "Hinweis: 4 Stunden nur Samstags" → aelteren loeschen
+   - mehrere Eintraege zu Anrede/Bevorzugte Anrede/Titel → alle bis auf den neuesten loeschen
+   - "Getraenk: Bier" UND "Getraenke: Kaffee und ab und zu Bier" → aelteren loeschen (neuerer ist ausfuehrlicher)
+
+6. WIDERSPRUCH — zwei Eintraege zum gleichen Thema mit verschiedenen Werten:
+   → Behalte den NEUEREN (hoehere ID oder spaeteres Datum). Loesche den AELTEREN.
+   Beispiele fuer Widersprueche:
+   - "Arbeit start: 8:30" vs "Arbeitsbeginn: 8 Uhr" vs "Startzeit: 9 Uhr" → nur neuesten behalten
+   - "Feierabend: ca. 16 Uhr" vs "Fertig um: 17 Uhr" → aelteren loeschen
+   - "Gehalt: 450 Euro" vs "Einkommen: 330 Euro" → wenn klar dasselbe gemeint ist, aelteren loeschen
+   - "Arbeitstag: Samstag" vs "Arbeitstage: Montag frei, Samstag frei" → aelteren/ungenaueren loeschen
+
+NIEMALS loeschen:
+- Dauerhaft gueltige Persoenlichkeitsdaten: Pseudonym, Dialekt, Praeferenzen, Antwortverhalten
+- Familieninfos: Partner, Kinder, Freunde, Bruder
+- Finanzen wenn NICHT widersprueche: Gehalt, Sparbetrag, Sparmethode, Berufsziel
+- Gesundheit, Hobbys, Routinen, Urlaubspläne, Termine in der Zukunft
 - Trading-Daten: Demo-Konto, Ziel, Plattform
-- Termin (Hochzeit, Geburtstag in der Zukunft)
-- Gesundheit
-- Einkaufsort, Heizung, Hausinformationen
 
 Antworte NUR mit einem JSON-Array. Jedes Element: {{"id": <int>, "grund": "<kurz>"}}
-Falls nichts eindeutig geloescht werden soll: []
+Bei Duplikaten/Widerspruechen: Grund = "Duplikat von ID X" oder "Widerspruch zu ID X, neuerer behalten"
+Falls wirklich nichts zu loeschen: []
 
 Fakten:
 {chr(10).join(fakten_lines)}

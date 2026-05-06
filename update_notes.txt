@@ -1,7 +1,7 @@
-Update 3.6
+Update 4.0
+- gps.py /gps_start eingeben und er kennt die Position
 - bot.py   
-  - Bot Reagiert jetzt auch Telegram Antworten 
-  - Bot Reagiert auf Emoticons auf Nachichten 
-- screensaver.py - Webinterface erweitert durch Screensaver Panel
-- behavior_engine.py - ein Modul was deinem Bot angewohnheiten bei bringt
-- web_app.py bringt deinem Bot jetzt bei was das Webinterface ist
+  - Chat auf 15 Nachichten erweitert
+- screensaver.py - Screensaver Panel anpassbar
+- web_orchestrator auf 32k Token erweitert
+

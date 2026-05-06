@@ -367,6 +367,18 @@ class PersonalMemory:
         if bi.get("geboren"): lines.append(f"Geboren: {bi['geboren']} in {bi.get('geburtsort','?')}")
         if bi.get("wohnort"): lines.append(f"Wohnort: {bi['wohnort']}")
 
+        # Aktueller GPS-Standort aus gps.json
+        try:
+            import json as _j
+            from pathlib import Path as _P
+            _gf = _P(__file__).parent / "memory" / "gps.json"
+            if _gf.exists():
+                _gd = _j.loads(_gf.read_text())
+                if _gd.get("aktiv") and _gd.get("adresse"):
+                    lines.append(f"Aktueller Standort: {_gd['adresse']} (GPS, {_gd.get('letzter_abruf','?')})")
+        except Exception:
+            pass
+
         p = data.get("partner", {})
         if p.get("name"):
             line = f"Partner: {p['name']}"
@@ -1121,7 +1133,7 @@ Nur JSON:"""
 
         msgs = (
             [{"role": "system", "content": system_msg}]
-            + self.chat_history[-6:]
+            + self.chat_history[-15:]
             + [{"role": "user", "content": user_text}]
         )
 
@@ -1250,7 +1262,7 @@ Antworte kurz und natürlich darauf — max. 1-2 Sätze. Kein langer Text."""
 
         msgs = (
             [{"role": "system", "content": system_msg}]
-            + self.chat_history[-4:]
+            + self.chat_history[-15:]
             + [{"role": "user", "content": reaction_user_msg}]
         )
 

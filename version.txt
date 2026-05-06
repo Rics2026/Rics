@@ -5,5 +5,5 @@ modules/screensaver.py
 modules/web_orchestrator.py
 modules/orchestrator.py
 modules/proactive_brain.py
-modules/wetteralarm_status.py
+modules/wetteralarm.py
 modules/memory_viewer.py

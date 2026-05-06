@@ -138,13 +138,156 @@ TECHNISCHER STACK:
 - DeepSeek / Groq / Ollama als LLM
 - macOS (AppleScript via subprocess möglich)
 - Verfügbare APIs: Growatt Solar, Wetter, YouTube, PayPal Monitor, Discord"""
+KIEDIT_CHAT_SYSTEM = """Du bist eine KI, die gemeinsam mit dem User die Datei
+{filename} in memory/brain/ bearbeitet. Du fuehrst einen normalen Chat —
+genau wie der Plan-Chat — und stellst Rueckfragen, schlaegst Aenderungen
+vor und planst gemeinsam mit dem User die Bearbeitung.
+
+VERHALTEN:
+- Stelle gezielte Rueckfragen wenn etwas unklar ist (welche Zeile? welcher Wert? loeschen oder ueberschreiben?)
+- Schlage konkrete Aenderungen vor und beschreibe sie kurz im Chat
+- Antworte locker auf Deutsch — kein Roboter-Stil, kurze Saetze
+- Bei JSON: erklaere kurz welche Keys du anpassen wuerdest
+
+⚡ APPLY-TRIGGER (KRITISCH — KEIN OPTIONALES VERHALTEN!):
+Wenn der User klar sagt er ist einverstanden mit der besprochenen Aenderung —
+"uebernimm", "mach es", "ja", "passt", "los", "okay so", "speichern",
+"jetzt machen", "fertig", "perfekt so" oder aehnliche Bestaetigungen UND
+die konkrete Aenderung wurde im Verlauf schon klar besprochen:
+
+→ Antworte AUSSCHLIESSLICH mit genau dem Marker auf einer eigenen Zeile,
+  gefolgt vom kompletten neuen Dateiinhalt:
+
+FILE_READY:
+<kompletter neuer vollstaendiger Dateiinhalt>
+
+→ KEIN Markdown. KEINE Backticks. KEINE Erklaerung danach.
+→ NUR der Marker + der reine Dateiinhalt.
+→ Bei JSON: gueltiges JSON ausgeben — keine Kommentare, keine Trailing-Commas.
+→ Behalte das Format der Datei exakt bei (JSON bleibt JSON, TXT bleibt TXT).
+
+REGELN FUER FILE_READY:
+1. Nach dem Marker kommt KEINE Zeile mehr Erklaerung — nur der Dateiinhalt.
+2. Aendere NUR was diskutiert wurde — nicht aufraeumen, nicht "verbessern".
+3. Gib IMMER den VOLLSTAENDIGEN Inhalt zurueck — niemals abgekuerzt mit "...".
+4. Bei JSON: das Resultat MUSS valides JSON sein.
+
+WICHTIG — solange der User noch redet, planst du nur. FILE_READY kommt
+NUR auf einen klaren Bestaetigungs-Befehl. Wenn unsicher: lieber nochmal
+nachfragen statt vorschnell FILE_READY zu schreiben."""
+
 orch_blueprint   = Blueprint("lab", __name__)
 _active_missions = {}
 _missions_lock   = threading.Lock()
 # Plan-Sessions: plan_id → list of messages
 _plan_sessions: dict = {}
 _plan_lock = threading.Lock()
+# Plan-Modelle: plan_id → "deepseek-chat" | "deepseek-reasoner" | None (= noch nicht gewählt)
+_plan_models: dict = {}
+# KI-Edit-Sessions: session_id → {"filename": str, "messages": [..]}
+_kiedit_sessions: dict = {}
+_kiedit_lock = threading.Lock()
+# KI-Edit-Modelle: session_id → "deepseek-chat" | "deepseek-reasoner" | None (= noch nicht gewählt)
+_kiedit_models: dict = {}
 ALLOWED_EXT = {".json", ".txt", ".md", ".yaml", ".yml", ".csv", ".py", ".sh", ".log"}
+
+
+# ────────────────────────────────────────────────────────────────
+#  CHATLOG-INTEGRATION
+#  Plan-Chats und KI-Edit-Chats schreiben zusaetzlich in
+#  logs/chatlog.json — damit RICS sich an die Lab-Konversationen
+#  erinnert (self_reflection, briefing, proactive_brain lesen
+#  alle aus dieser Datei).
+#
+#  Format (kompatibel mit brain.py log_chat):
+#    {"timestamp": iso, "role": "user"|"assistant",
+#     "message": str, "source": "lab_plan"|"lab_kiedit"}
+#
+#  Das "source"-Feld ist neu — bestehende Konsumenten ignorieren
+#  unbekannte Felder, also voll abwaertskompatibel.
+# ────────────────────────────────────────────────────────────────
+
+_CHATLOG_FILE = os.path.join(LOGS_DIR, "chatlog.json")
+_chatlog_lock = threading.Lock()
+_dailylog_lock = threading.Lock()
+
+def _append_dailylog(role: str, message: str, source: str = "lab"):
+    """Haengt einen Eintrag ans tagesweise Klartext-Log an
+    (logs/YYYY-MM-DD.log) — gleiches Format wie bot.py log_chat
+    schreibt. Quelle wird als Tag voran gesetzt damit beim
+    Nachlesen erkennbar ist dass es aus dem Lab kam.
+    Best-effort, Fehler werden geloggt aber nie geworfen."""
+    if not message or not message.strip():
+        return
+    try:
+        os.makedirs(LOGS_DIR, exist_ok=True)
+        today    = datetime.now().strftime("%Y-%m-%d")
+        log_file = os.path.join(LOGS_DIR, f"{today}.log")
+        # Source-Tag in Grossbuchstaben, kompatibel mit dem
+        # bestehenden "[WEB]" Pattern aus web_app.py
+        tag = f"[{source.upper()}]"
+        prefix = "USER" if role == "user" else "BOT"
+        # Multiline-Nachrichten: jede Zeile mit Tag+Prefix kennzeichnen
+        # damit Greppen/Lesen einfach bleibt.
+        first = True
+        with _dailylog_lock:
+            with open(log_file, "a", encoding="utf-8") as f:
+                for line in message.splitlines() or [message]:
+                    if first:
+                        f.write(f"{tag} {prefix}: {line}\n")
+                        first = False
+                    else:
+                        f.write(f"{tag}        {line}\n")
+                if first:  # message war leer / nur whitespace
+                    f.write(f"{tag} {prefix}: \n")
+        # Rotation analog bot.py: max 20 .log-Dateien behalten
+        try:
+            logs = sorted([f for f in os.listdir(LOGS_DIR) if f.endswith(".log")])
+            while len(logs) > 20:
+                os.remove(os.path.join(LOGS_DIR, logs.pop(0)))
+        except Exception:
+            pass
+    except Exception as e:
+        logger.warning(f"daily log append failed ({source}): {e}")
+
+
+def _append_chatlog(role: str, message: str, source: str = "lab"):
+    """Haengt eine Nachricht an logs/chatlog.json (strukturiert,
+    fuer RICS' Memory-Module) UND an logs/YYYY-MM-DD.log (Klartext,
+    menschen-lesbar). Best-effort — Fehler werden geloggt aber nie
+    geworfen, damit der Chat-Flow nie wegen Log-Problemen crasht."""
+    if not message or not message.strip():
+        return
+    # 1) Strukturiertes JSON-Log fuer RICS' Memory-Konsumenten
+    try:
+        os.makedirs(LOGS_DIR, exist_ok=True)
+        with _chatlog_lock:
+            logs = []
+            if os.path.exists(_CHATLOG_FILE):
+                try:
+                    with open(_CHATLOG_FILE, "r", encoding="utf-8") as f:
+                        logs = json.load(f)
+                    if not isinstance(logs, list):
+                        logs = []
+                except Exception:
+                    logs = []
+            logs.append({
+                "timestamp": datetime.now().isoformat(),
+                "role":      role,
+                "message":   message,
+                "source":    source,
+            })
+            # gleiches Limit wie brain.py
+            if len(logs) > 5000:
+                logs = logs[-5000:]
+            with open(_CHATLOG_FILE, "w", encoding="utf-8") as f:
+                json.dump(logs, f, indent=4, ensure_ascii=False)
+    except Exception as e:
+        logger.warning(f"chatlog append failed ({source}): {e}")
+
+    # 2) Tages-.log fuer menschliche Lektuere & Konsistenz mit
+    #    bot.py / web_app.py Chat-Flow
+    _append_dailylog(role, message, source)
 
 
 async def llm_call(messages, use_json=False, log_fn=None):
@@ -193,6 +336,158 @@ async def llm_call(messages, use_json=False, log_fn=None):
     res   = await loop.run_in_executor(None, lambda: ollama.chat(model=model, messages=messages))
     content = res["message"]["content"].strip()
     return re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
+
+
+# ────────────────────────────────────────────────────────────────
+#  MISSION-MEMORY: brain_log + ChromaDB
+#  Nach MODUL FERTIG + Install soll RICS narrativ wissen, was er
+#  wann gebaut hat — nicht nur strukturell ueber funktions_scan.
+# ────────────────────────────────────────────────────────────────
+
+# Sensible Schluesselwoerter, die NIE in Memory landen sollen.
+# Wenn die Plan-Zusammenfassung sowas enthaelt, redacten wir die Werte.
+_SECRET_PATTERNS = [
+    re.compile(r"(api[_\-\s]?key\s*[:=]\s*)([A-Za-z0-9_\-]{12,})", re.IGNORECASE),
+    re.compile(r"(token\s*[:=]\s*)([A-Za-z0-9_\-\.]{16,})",       re.IGNORECASE),
+    re.compile(r"(password\s*[:=]\s*)(\S+)",                       re.IGNORECASE),
+    re.compile(r"(secret\s*[:=]\s*)(\S+)",                         re.IGNORECASE),
+    # 32+ Zeichen Hex-Block (typisches API-Key-Muster, z.B. Steam)
+    re.compile(r"\b([A-Fa-f0-9]{32,})\b"),
+]
+
+def _redact_secrets(text: str) -> str:
+    """Ersetzt offensichtliche Secrets durch '<redacted>'. Konservativ —
+    lieber zu viel redacten als ein API-Key in der Memory."""
+    if not text:
+        return text
+    out = text
+    for pat in _SECRET_PATTERNS[:-1]:
+        out = pat.sub(lambda m: m.group(1) + "<redacted>", out)
+    out = _SECRET_PATTERNS[-1].sub("<redacted>", out)
+    return out
+
+
+def _build_plan_summary(messages: list, plan_fertig_text: str = "") -> str:
+    """Kompakte Plan-Zusammenfassung fuer Memory: erste User-Anfrage,
+    letzte User-Bestaetigung, finaler PLAN_FERTIG-Beschluss. Kein
+    voller Verlauf — Embeddings werden bei zu langem Text unscharf."""
+    if not messages:
+        return _redact_secrets(plan_fertig_text or "")
+    user_msgs = [m.get("content", "") for m in messages if m.get("role") == "user"]
+    user_msgs = [m for m in user_msgs if m]
+    if not user_msgs:
+        return _redact_secrets(plan_fertig_text or "")
+    parts = [f"Urspruengliche Anfrage: {user_msgs[0][:250]}"]
+    if len(user_msgs) > 1 and user_msgs[-1] != user_msgs[0]:
+        parts.append(f"Letzte Bestaetigung: {user_msgs[-1][:200]}")
+    if plan_fertig_text:
+        parts.append(f"Beschlossen: {plan_fertig_text[:300]}")
+    return _redact_secrets(" | ".join(parts))
+
+
+def _write_mission_memory(meta: dict) -> tuple:
+    """Schreibt Mission in brain_log.json + ChromaDB user_memory.
+    Beide Pfade mit graceful failure — eines kann scheitern ohne den
+    anderen zu kippen. Returns (brain_ok: bool, chroma_ok: bool)."""
+    brain_ok  = False
+    chroma_ok = False
+
+    # 1) brain_log.json — strukturierter Eintrag
+    try:
+        log_file = os.path.join(MEMORY_DIR, "brain_log.json")
+        logs = []
+        if os.path.exists(log_file):
+            try:
+                with open(log_file, "r", encoding="utf-8") as f:
+                    logs = json.load(f)
+                if not isinstance(logs, list):
+                    logs = []
+            except Exception:
+                logs = []
+        entry = {
+            "timestamp": datetime.now().isoformat(),
+            "event":     "module_installed",
+            "data": {
+                "command":      meta.get("command", "")[:50],
+                "filename":     meta.get("filename", "")[:80],
+                "task_id":      meta.get("task_id", "")[:80],
+                "code_lines":   int(meta.get("code_lines", 0) or 0),
+                "task_summary": _redact_secrets(meta.get("task_summary", ""))[:300],
+                "plan_id":      meta.get("plan_id", "")[:60],
+            }
+        }
+        logs.append(entry)
+        if len(logs) > 1000:
+            logs = logs[-1000:]
+        os.makedirs(MEMORY_DIR, exist_ok=True)
+        with open(log_file, "w", encoding="utf-8") as f:
+            json.dump(logs, f, indent=2, ensure_ascii=False)
+        brain_ok = True
+    except Exception as e:
+        print(f"⚠️ brain_log mission entry failed: {e}")
+
+    # 2) ChromaDB user_memory — semantisch durchsuchbar fuer RICS
+    try:
+        import chromadb
+        from chromadb.utils import embedding_functions
+        vec_path = os.path.join(MEMORY_DIR, "vectors")
+        client   = chromadb.PersistentClient(path=vec_path)
+        embed    = embedding_functions.SentenceTransformerEmbeddingFunction(
+            model_name="all-MiniLM-L6-v2"
+        )
+        coll = client.get_or_create_collection(name="user_memory", embedding_function=embed)
+
+        date_de  = datetime.now().strftime("%d.%m.%Y")
+        cmd      = meta.get("command",  "neues_Modul")
+        fname    = meta.get("filename", "?")
+        lines    = int(meta.get("code_lines", 0) or 0)
+        task_sum = _redact_secrets(meta.get("task_summary", ""))[:400]
+        plan_sum = _redact_secrets(meta.get("plan_excerpt", ""))[:800]
+
+        text = (
+            f"MISSION: Am {date_de} hat RICS das Telegram-Modul /{cmd} gebaut "
+            f"(Datei {fname}, {lines} Zeilen Code). "
+        )
+        if task_sum:
+            text += f"Aufgabe: {task_sum} "
+        if plan_sum:
+            text += f"Plan-Verlauf: {plan_sum}"
+
+        coll.add(
+            documents=[text.strip()],
+            ids=[f"mission_{int(datetime.now().timestamp() * 1000)}"]
+        )
+        chroma_ok = True
+    except Exception as e:
+        print(f"⚠️ chroma mission entry failed: {e}")
+
+    return brain_ok, chroma_ok
+
+
+def _read_mission_meta(task_id: str) -> dict:
+    """Liest Meta-Datei zu einer Mission. Leerer Dict wenn nicht da."""
+    path = os.path.join(WORKSPACE, f"auto_{task_id}.meta.json")
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _write_mission_meta(task_id: str, data: dict):
+    """Schreibt/aktualisiert Mission-Meta-Datei. Merge mit existierendem Inhalt."""
+    path = os.path.join(WORKSPACE, f"auto_{task_id}.meta.json")
+    try:
+        existing = _read_mission_meta(task_id)
+        existing.update(data)
+        os.makedirs(WORKSPACE, exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(existing, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        print(f"⚠️ mission meta write failed: {e}")
 
 
 class OrchestratorWeb:
@@ -266,7 +561,12 @@ class OrchestratorWeb:
 
     def _research_failed(self, research_result):
         """Prüft ob Recherche-Ergebnis brauchbar ist.
-        Returns None wenn OK, sonst einen kurzen Fail-Grund (str)."""
+        Returns None wenn OK, sonst einen kurzen Fail-Grund (str).
+        Spezial-Codes:
+          'AUTH_WALL'    — alle Endpoints haben 401/403 geliefert (Test-Key invalid)
+                           Im Retry NICHT andere APIs suchen, sondern Doku lesen.
+          'DOKU_SCHEMA'  — Recherche hat Response-Schema aus Doku extrahiert
+                           (auch ohne 200-Call gueltig, wenn JSON-Pfade dokumentiert)."""
         if not research_result or not research_result.strip():
             return "leeres Ergebnis"
         rl = research_result.lower()
@@ -281,36 +581,44 @@ class OrchestratorWeb:
         if "syntax_error" in rl or "kein output" in rl[:30]:
             return "kein Output (Code-Crash)"
 
+        # ── DOKU-SCHEMA als Erfolg akzeptieren ──
+        # Wenn die Recherche aus offizieller Doku ein Response-Schema extrahiert hat
+        # (Endpoint existiert, JSON-Pfade aus Doku bekannt), ist das brauchbar —
+        # auch ohne tatsaechlichen 200-Call mit echtem Key.
+        if "doku_schema" in rl or "response-schema:" in rl or "response schema:" in rl:
+            return None
+
         # ── POSITIV-Erkennung: gibt es Hinweise auf einen funktionierenden Endpoint? ──
-        # Recherche darf MEHRERE Endpoints testen — solange MINDESTENS einer 200 lieferte
-        # und eine echte Response-Probe vorhanden ist, ist die Recherche brauchbar.
         positive_signals = (
-            "status 200",          # explizit 200-Status irgendwo
-            "funktioniert",        # "Endpoint /xy funktioniert"
-            "ok für",              # "OK für https://..."
+            "status 200",
+            "funktioniert",
+            "ok für",
             "ok fuer",
-            "result: http",        # RESULT mit URL
+            "result: http",
             "result: https",
         )
         has_positive = any(p in rl for p in positive_signals)
 
-        # JSON-Probe als Indiz: mind. ein dict mit "id"/"name"/typischen Feldern
-        # Heuristik: { ... "id":  ... } und/oder mehrzeiliger JSON-Block
         has_json_sample = bool(
             re.search(r'\{\s*\n[^{}]*"\w+"\s*:', research_result)
             or re.search(r'"id"\s*:\s*"', research_result)
         )
 
-        # ── Negative HTTP-Signale ──
         has_200_token = bool(re.search(r"\b200\b", research_result))
         http_errs     = set(re.findall(r"\b(4\d{2}|5\d{2})\b", research_result))
 
-        # Wenn klar positiv (200-Status oder "funktioniert") UND eine Struktur-Probe da ist
-        # → akzeptieren, auch wenn parallel ein Fehler-Endpoint getestet wurde.
         if (has_positive or has_200_token) and has_json_sample:
             return None
 
-        # Klassische harte Fehler ohne jeglichen Erfolg
+        # ── AUTH-WALL erkennen: Recherche stuft API als auth-protected ein ──
+        # Symptom: 401 und/oder 403 dominant, KEIN 200 irgendwo, KEIN JSON-Sample.
+        # Das passiert weil der Recherche-Code mit Dummy-Key testet — die API
+        # selbst funktioniert, der Key ist nur fuer Recherche nicht gueltig.
+        # In diesem Fall NICHT andere APIs suchen, sondern Doku lesen.
+        auth_codes = http_errs & {"401", "403"}
+        if auth_codes and not (has_positive or has_200_token) and not has_json_sample:
+            return f"AUTH_WALL ({','.join(sorted(auth_codes))} dominant — Doku lesen statt Alternative suchen)"
+
         if http_errs and not (has_positive or has_200_token):
             return f"HTTP {','.join(sorted(http_errs))} ohne Erfolg"
         for s in ("service unavailable", "internal server error",
@@ -318,7 +626,6 @@ class OrchestratorWeb:
             if s in rl and not (has_positive or has_200_token):
                 return f"Fehler-Signal '{s}'"
 
-        # Fail-Signale die nur greifen wenn KEIN Positiv-Hinweis im Output ist
         for sig in ("result: fehler", "result: failed", "result: error", "fehlgeschlagen:"):
             if sig in rl and not (has_positive or has_json_sample):
                 return f"Fail-Signal '{sig.strip()}'"
@@ -436,6 +743,43 @@ class OrchestratorWeb:
                                 f"Ausgabe: print('RESULT:',...)\nNur reiner Python-Code, keine Backticks."
                             )}
                         ]
+                    elif "AUTH_WALL" in fail_reason:
+                        # Auth-Wall = Endpoints existieren, aber Test-Key ist ungueltig.
+                        # Statt blind andere APIs suchen (das fuehrt zu falschen
+                        # Endpoints wie 'featuredcategories' bei Steam) → Doku lesen.
+                        self.log("🔁 Auth-Wall erkannt → Doku-Read statt Alternative...", "info")
+                        research_messages += [
+                            {"role":"assistant","content": raw or ""},
+                            {"role":"user","content":(
+                                f"Die getesteten Endpoints liefern 401/403. Das ist NORMAL —\n"
+                                f"dein Recherche-Code testet mit einem Dummy-Key, der echte\n"
+                                f"User-Key kommt erst im Builder zum Einsatz. Die Endpoints\n"
+                                f"selbst EXISTIEREN. Also NICHT auf andere APIs ausweichen!\n\n"
+                                f"PFLICHT-VORGEHEN — offizielle Doku lesen:\n"
+                                f"1. Bestimme die Doku-URL des Anbieters. Typische Muster:\n"
+                                f"   - https://<api>/docs, https://developer.<service>.com,\n"
+                                f"     https://partner.<service>.com/doc, /api-docs, /reference\n"
+                                f"   - Bei bekannten APIs (Steam, Spotify, GitHub, Twitch, ...)\n"
+                                f"     gibt es eine offizielle Web-Dev-Doku.\n"
+                                f"2. Fetche die Doku mit httpx/requests (timeout=10).\n"
+                                f"3. Parse den HTML/Markdown-Text — suche nach:\n"
+                                f"   - Beispiel-Response-JSON (oft in <code>/<pre>-Bloecken)\n"
+                                f"   - Feldlisten / Tabellen mit Feldnamen + Typen\n"
+                                f"4. Extrahiere fuer JEDEN benoetigten Endpoint die\n"
+                                f"   EXAKTE Response-Struktur — vor allem die Wrapper-Pfade!\n"
+                                f"   z.B. 'response.players[]' vs 'friendslist.friends[]'\n"
+                                f"   vs direkter Listen-Return. APIs sind hier oft inkonsistent\n"
+                                f"   (selbst INNERHALB derselben API).\n\n"
+                                f"AUSGABE-FORMAT (PFLICHT, EXAKT):\n"
+                                f"   print('RESULT: DOKU_SCHEMA fuer <api-name>')\n"
+                                f"   print('Endpoint: <url>')\n"
+                                f"   print('Response-Schema: <python-dict-pfad zum array/object>')\n"
+                                f"   print('Beispiel-Felder: <feld1>, <feld2>, ...')\n"
+                                f"   (mehrfach fuer mehrere Endpoints)\n\n"
+                                f"Code-Limits: max 80 Zeilen. Strings in einer Zeile.\n"
+                                f"Nur reiner Python-Code, keine Backticks."
+                            )}
+                        ]
                     else:
                         self.log("🔁 Suche Alternative oder lese Doku...", "info")
                         research_messages += [
@@ -524,8 +868,17 @@ class OrchestratorWeb:
                     ws = os.path.join(WORKSPACE, f"auto_{self.task_id}.py")
                     with open(ws, "w", encoding="utf-8") as f: f.write(code)
                     cmd_m = re.search(r'CommandHandler\(["\'](\w+)["\']', code)
-                    fname = f"{cmd_m.group(1)}.py" if cmd_m else f"auto_{self.task_id}.py"
+                    cmd_name = cmd_m.group(1) if cmd_m else ""
+                    fname = f"{cmd_name}.py" if cmd_m else f"auto_{self.task_id}.py"
                     prev  = "\n".join(code.splitlines()[:25])
+                    # Mission-Meta mit Build-Ergebnis fuettern — wird beim Install
+                    # in brain_log + ChromaDB geschrieben.
+                    _write_mission_meta(self.task_id, {
+                        "command":    cmd_name,
+                        "filename":   fname,
+                        "code_lines": lines,
+                        "built_at":   datetime.now().isoformat(),
+                    })
                     self.log(f"✅ <b>MODUL FERTIG</b> — {lines} Zeilen → <code>{fname}</code>\n\n"
                              f"<pre>{html.escape(prev)}...</pre>", "success")
                     self.q.put({"type":"action","mode":"install","task_id":self.task_id,"filename":fname})
@@ -889,8 +1242,67 @@ def lab_file():
 def lab_run():
     data = request.get_json(silent=True) or {}
     task = (data.get("task") or "").strip()
+    plan_id = (data.get("plan_id") or "").strip()
     if not task: return jsonify({"error":"Keine Aufgabe"}), 400
-    mid   = task_id_safe(task + str(datetime.now().timestamp()))
+
+    # Original Task (vor Plan-Anhang) — landet spaeter in Memory.
+    original_task = task
+
+    # Mission-ID aus dem urspruenglichen Task-Kern (vor Plan-Anhang).
+    mid = task_id_safe(task[:100] + str(datetime.now().timestamp()))
+
+    # Plan-Summary fuer spaeteren Memory-Eintrag (kompakt, kein Volltext).
+    plan_summary = ""
+    plan_fertig_text = ""
+    pf_match = re.search(r"PLAN_FERTIG:\s*(.+?)(?:\n|$)", original_task, re.IGNORECASE)
+    if pf_match:
+        plan_fertig_text = pf_match.group(1).strip()
+
+    # Plan-Verlauf als Kontext an den Task anhaengen, falls vorhanden.
+    # So bekommt der Builder ALLE konkreten Werte (API-Keys, IDs, URLs,
+    # Layout-Beispiele, Workflow-Details) aus dem Plan-Chat mit.
+    if plan_id:
+        with _plan_lock:
+            session_msgs = list(_plan_sessions.get(plan_id, []))
+        if session_msgs:
+            plan_summary = _build_plan_summary(session_msgs, plan_fertig_text)
+            transcript_lines = []
+            for m in session_msgs:
+                role = "User" if m.get("role") == "user" else "Plan-Assistent"
+                content = (m.get("content") or "").strip()
+                content = re.sub(r"PLAN_FERTIG:.*?(?:\n|$)", "", content,
+                                 flags=re.IGNORECASE).strip()
+                if content:
+                    transcript_lines.append(f"{role}: {content}")
+            if transcript_lines:
+                transcript = "\n\n".join(transcript_lines)
+                if len(transcript) > 12000:
+                    transcript = transcript[-12000:]
+                task = (
+                    f"{task}\n\n"
+                    f"=== VOLLSTAENDIGER PLAN-VERLAUF ===\n"
+                    f"Im folgenden Chat wurden ALLE konkreten Details abgestimmt:\n"
+                    f"API-Keys, IDs, Steam-IDs, URLs, Beispiel-Layouts (ASCII-Boxen,\n"
+                    f"Rahmen, Symbole), Workflow-Schritte, Endpoint-Pfade.\n"
+                    f"Verwende diese Werte und Layouts GENAU SO im Code.\n"
+                    f"KEINE Platzhalter wie 'YOUR_API_KEY' / 'YOUR_STEAM64_ID' —\n"
+                    f"wenn ein Wert im Verlauf steht, gehoert er hartcodiert in den Code.\n"
+                    f"Achte auf JSON-Pfade die in der Recherche/im Verlauf genannt sind\n"
+                    f"(z.B. 'friendslist.friends' nicht 'friends').\n\n"
+                    f"{transcript}\n"
+                    f"=== ENDE PLAN-VERLAUF ==="
+                )
+
+    # Mission-Meta vorab schreiben — wird beim Erfolg von execute_mission
+    # ergaenzt (filename, command, code_lines) und beim Install in Memory geschrieben.
+    _write_mission_meta(mid, {
+        "task_id":      mid,
+        "task_summary": original_task[:500],
+        "plan_id":      plan_id,
+        "plan_excerpt": plan_summary,
+        "created_at":   datetime.now().isoformat(),
+    })
+
     log_q = queue.Queue(maxsize=500)
     with _missions_lock: _active_missions[mid] = log_q
     try:
@@ -930,7 +1342,34 @@ def lab_install():
     if not os.path.exists(ws_path): return jsonify({"error":"Datei nicht gefunden"}), 404
     try:
         shutil.copy2(ws_path, os.path.join(MODULES_DIR, fname))
-        return jsonify({"ok":True,"message":f"✅ Installiert als modules/{fname} — Neustart erforderlich!"})
+
+        # Mission-Memory schreiben — RICS soll im Nachhinein wissen, was er
+        # wann gebaut hat (nicht nur strukturell ueber funktions_scan).
+        # Failures hier blockieren den Install nicht.
+        memory_note = ""
+        meta = _read_mission_meta(task_id)
+        if meta:
+            # Falls Filename nicht in Meta steht (Edge-Case), aus Request nehmen.
+            if not meta.get("filename"):
+                meta["filename"] = fname
+            if not meta.get("command") and fname.endswith(".py"):
+                meta["command"] = fname[:-3]
+            brain_ok, chroma_ok = _write_mission_memory(meta)
+            tags = []
+            if brain_ok:  tags.append("brain_log")
+            if chroma_ok: tags.append("ChromaDB")
+            if tags:
+                memory_note = f" • RICS-Memory: {' + '.join(tags)} ✅"
+            # Meta-Datei aufraeumen — Job erledigt.
+            try:
+                os.remove(os.path.join(WORKSPACE, f"auto_{task_id}.meta.json"))
+            except Exception:
+                pass
+
+        return jsonify({
+            "ok": True,
+            "message": f"✅ Installiert als modules/{fname} — Neustart erforderlich!{memory_note}"
+        })
     except Exception as e:
         return jsonify({"error":str(e)}), 500
 
@@ -1025,11 +1464,77 @@ def lab_plan():
     if not user_msg:
         return jsonify({"error": "Keine Nachricht"}), 400
 
+    _sse_headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+
+    # ── Modell-Auswahl: Zustand bestimmen ──────────────────────────────
     with _plan_lock:
-        if plan_id not in _plan_sessions:
+        is_new_session = plan_id not in _plan_sessions
+        if is_new_session:
             _plan_sessions[plan_id] = []
+            _plan_models[plan_id]   = None  # Noch nicht gewählt
+        current_model = _plan_models.get(plan_id)
+
+    # ── PHASE 1: Neue Session → Modell-Frage stellen (kein LLM-Call) ──
+    if is_new_session:
+        with _plan_lock:
+            _plan_sessions[plan_id].append({"role": "user", "content": user_msg})
+
+        selection_msg = (
+            "Welches Modell soll ich für diese Plan-Session verwenden?\n\n"
+            "⚡  1 · Flash  —  DeepSeek V3  (schnell & effizient)\n"
+            "🧠  2 · Thinking  —  DeepSeek R1  (tiefes Nachdenken, etwas langsamer)\n\n"
+            "Einfach `1` oder `2` — oder `flash` / `thinking` eingeben."
+        )
+        _append_chatlog("user",      user_msg,      source="lab_plan")
+        _append_chatlog("assistant", selection_msg, source="lab_plan")
+
+        def _gen_selection():
+            with _plan_lock:
+                _plan_sessions[plan_id].append({"role": "assistant", "content": selection_msg})
+            yield "data: " + json.dumps({"token": selection_msg}, ensure_ascii=False) + "\n\n"
+            yield 'data: {"done":true}\n\n'
+
+        return Response(_gen_selection(), mimetype="text/event-stream", headers=_sse_headers)
+
+    # ── PHASE 2: Antwort auf Modell-Frage → Wahl setzen ───────────────
+    if current_model is None:
+        msg_lower = user_msg.lower().strip()
+        if any(k in msg_lower for k in ["1", "flash", "v3", "chat", "schnell", "effizient"]):
+            chosen_model  = "deepseek-chat"
+            model_display = "DeepSeek V3 Flash ⚡"
+        else:
+            chosen_model  = "deepseek-reasoner"
+            model_display = "DeepSeek R1 Thinking 🧠"
+
+        with _plan_lock:
+            _plan_models[plan_id] = chosen_model
+            _plan_sessions[plan_id].append({"role": "user", "content": user_msg})
+
+        confirm_msg = (
+            f"✅ Alles klar — ich nutze **{model_display}** für diese Session.\n\n"
+            f"Was soll gebaut werden? Telegram-Modul, lokales Skript, GUI-App oder Recherche?"
+        )
+        _append_chatlog("user",      user_msg,    source="lab_plan")
+        _append_chatlog("assistant", confirm_msg, source="lab_plan")
+
+        def _gen_confirm():
+            with _plan_lock:
+                _plan_sessions[plan_id].append({"role": "assistant", "content": confirm_msg})
+            yield "data: " + json.dumps({"token": confirm_msg}, ensure_ascii=False) + "\n\n"
+            yield 'data: {"done":true}\n\n'
+
+        return Response(_gen_confirm(), mimetype="text/event-stream", headers=_sse_headers)
+
+    # ── PHASE 3: Normaler Plan-Chat mit gewähltem Modell ──────────────
+    plan_model = _plan_models.get(plan_id, DS_MODEL)
+
+    with _plan_lock:
         _plan_sessions[plan_id].append({"role": "user", "content": user_msg})
         messages = [{"role": "system", "content": PLAN_SYSTEM}] + list(_plan_sessions[plan_id][-20:])
+
+    # Chatlog: User-Nachricht aus dem Plan-Chat in logs/chatlog.json
+    # damit RICS sich an die Plan-Konversation erinnert.
+    _append_chatlog("user", user_msg, source="lab_plan")
 
     tok_q   = queue.Queue(maxsize=2000)
     done_ev = threading.Event()
@@ -1047,7 +1552,7 @@ def lab_plan():
                     async with httpx.AsyncClient(timeout=120) as c:
                         async with c.stream("POST", DS_URL,
                             headers={"Authorization":f"Bearer {ds_key}","Content-Type":"application/json"},
-                            json={"model":DS_MODEL,"messages":messages,"stream":True,
+                            json={"model": plan_model, "messages": messages, "stream": True,
                                   "max_tokens":2048,"temperature":0.7}) as r:
                             if r.status_code == 200:
                                 async for line in r.aiter_lines():
@@ -1113,6 +1618,7 @@ def lab_plan():
         with _plan_lock:
             if plan_id in _plan_sessions:
                 _plan_sessions[plan_id].append({"role":"assistant","content":full_text})
+        _append_chatlog("assistant", full_text, source="lab_plan")
         plan_m = re.search(r"PLAN_FERTIG:\s*(.+?)(?:\n|$)", full_text, re.IGNORECASE)
         if plan_m:
             yield "data: " + json.dumps({"plan_ready": plan_m.group(1).strip()}, ensure_ascii=False) + "\n\n"
@@ -1126,7 +1632,9 @@ def lab_plan():
 def lab_plan_reset():
     data    = request.get_json(silent=True) or {}
     plan_id = data.get("plan_id","default")
-    with _plan_lock: _plan_sessions.pop(plan_id, None)
+    with _plan_lock:
+        _plan_sessions.pop(plan_id, None)
+        _plan_models.pop(plan_id, None)
     return jsonify({"ok":True})
 
 @orch_blueprint.route("/lab/brain/save", methods=["POST"])
@@ -1208,6 +1716,351 @@ def lab_brain_apply():
                         "backup":os.path.basename(backup) if backup and not str(backup).startswith("FEHLER") else None})
     except Exception as e:
         return jsonify({"error":str(e)}), 500
+
+
+# ────────────────────────────────────────────────────────────────
+#  KI-EDIT CHAT — wie Plan-Chat aber pro Datei in memory/brain/.
+#  User chattet mit der KI ueber gewuenschte Aenderungen, klar
+#  formulierte Bestaetigungen ("uebernimm", "ja mach", "passt")
+#  triggern eine Antwort mit Marker "FILE_READY:" gefolgt vom
+#  kompletten neuen Dateiinhalt — Frontend zeigt dann den Diff.
+#  Apply selber laeuft weiter ueber /lab/brain/apply (unveraendert).
+# ────────────────────────────────────────────────────────────────
+
+@orch_blueprint.route("/lab/brain/ki-chat", methods=["POST"])
+def lab_brain_ki_chat():
+    """Streaming KI-Edit-Chat fuer eine Datei in memory/brain/."""
+    if not _check_auth():
+        return Response('data:{"error":"unauthorized"}\n\n', mimetype="text/event-stream")
+    data         = request.get_json(silent=True) or {}
+    session_id   = (data.get("session_id") or "").strip()
+    filename     = (data.get("filename")   or "").strip()
+    user_msg     = (data.get("message")    or "").strip()
+    live_content = data.get("content")  # darf None sein
+
+    if not session_id or not filename or not user_msg:
+        return jsonify({"error":"session_id, filename und message noetig"}), 400
+
+    ok, filepath = _is_safe_brain_path(filename)
+    if not ok:
+        return jsonify({"error": filepath}), 400
+
+    _sse_headers = {"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+
+    # Aktuellen Dateiinhalt bestimmen
+    if isinstance(live_content, str):
+        current_content = live_content
+    else:
+        try:
+            with open(filepath, "r", encoding="utf-8") as f:
+                current_content = f.read()
+        except FileNotFoundError:
+            current_content = ""
+        except Exception as e:
+            return jsonify({"error": f"Datei lesen: {e}"}), 500
+
+    # Session anlegen / fortschreiben — bei Datei-Wechsel auch Modell zurücksetzen
+    with _kiedit_lock:
+        sess = _kiedit_sessions.get(session_id)
+        file_changed = not sess or sess.get("filename") != filename
+        if file_changed:
+            sess = {"filename": filename, "messages": []}
+            _kiedit_sessions[session_id] = sess
+            _kiedit_models[session_id]   = None  # Modell neu wählen
+        current_model = _kiedit_models.get(session_id)
+        is_new = file_changed
+
+    # ── PHASE 1: Neue/gewechselte Session → Modell-Frage stellen ──────
+    if is_new:
+        with _kiedit_lock:
+            sess["messages"].append({"role": "user", "content": user_msg})
+
+        selection_msg = (
+            f"Welches Modell soll ich für das Bearbeiten von **{filename}** verwenden?\n\n"
+            "⚡  1 · Flash  —  DeepSeek V3  (schnell & effizient)\n"
+            "🧠  2 · Thinking  —  DeepSeek R1  (tiefes Nachdenken, etwas langsamer)\n\n"
+            "Einfach `1` oder `2` — oder `flash` / `thinking` eingeben."
+        )
+        _append_chatlog("user",      f"[{filename}] {user_msg}", source="lab_kiedit")
+        _append_chatlog("assistant", selection_msg,               source="lab_kiedit")
+
+        def _gen_selection():
+            with _kiedit_lock:
+                s = _kiedit_sessions.get(session_id)
+                if s:
+                    s["messages"].append({"role": "assistant", "content": selection_msg})
+            yield "data: " + json.dumps({"token": selection_msg}, ensure_ascii=False) + "\n\n"
+            yield 'data: {"done":true}\n\n'
+
+        return Response(_gen_selection(), mimetype="text/event-stream", headers=_sse_headers)
+
+    # ── PHASE 2: Antwort auf Modell-Frage → Wahl setzen ───────────────
+    if current_model is None:
+        msg_lower = user_msg.lower().strip()
+        if any(k in msg_lower for k in ["1", "flash", "v3", "chat", "schnell", "effizient"]):
+            chosen_model  = "deepseek-chat"
+            model_display = "DeepSeek V3 Flash ⚡"
+        else:
+            chosen_model  = "deepseek-reasoner"
+            model_display = "DeepSeek R1 Thinking 🧠"
+
+        with _kiedit_lock:
+            _kiedit_models[session_id] = chosen_model
+            s = _kiedit_sessions.get(session_id)
+            if s:
+                s["messages"].append({"role": "user", "content": user_msg})
+
+        confirm_msg = (
+            f"✅ Verstanden — ich nutze **{model_display}** für diese Session.\n\n"
+            f"Was soll an **{filename}** geändert werden?"
+        )
+        _append_chatlog("user",      f"[{filename}] {user_msg}", source="lab_kiedit")
+        _append_chatlog("assistant", confirm_msg,                 source="lab_kiedit")
+
+        def _gen_confirm():
+            with _kiedit_lock:
+                s = _kiedit_sessions.get(session_id)
+                if s:
+                    s["messages"].append({"role": "assistant", "content": confirm_msg})
+            yield "data: " + json.dumps({"token": confirm_msg}, ensure_ascii=False) + "\n\n"
+            yield 'data: {"done":true}\n\n'
+
+        return Response(_gen_confirm(), mimetype="text/event-stream", headers=_sse_headers)
+
+    # ── PHASE 3: Normaler KI-Edit-Chat mit gewähltem Modell ───────────
+    ki_model = _kiedit_models.get(session_id, DS_MODEL)
+
+    with _kiedit_lock:
+        s = _kiedit_sessions.get(session_id)
+        if s:
+            s["messages"].append({"role": "user", "content": user_msg})
+            history = list(s["messages"][-20:])
+        else:
+            history = [{"role": "user", "content": user_msg}]
+
+    sys_prompt = KIEDIT_CHAT_SYSTEM.format(filename=filename)
+    sys_prompt += (
+        f"\n\n--- AKTUELLER DATEIINHALT ({filename}) ---\n"
+        f"{current_content}\n"
+        f"--- ENDE DATEIINHALT ---"
+    )
+    messages = [{"role": "system", "content": sys_prompt}] + history
+
+    _append_chatlog("user", f"[{filename}] {user_msg}", source="lab_kiedit")
+
+    tok_q    = queue.Queue(maxsize=2000)
+    done_ev  = threading.Event()
+    full_buf = []
+
+    def _streamer():
+        loop2 = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop2)
+        async def _run():
+            ds_key   = os.getenv("DEEPSEEK_API_KEY", "")
+            groq_key = os.getenv("GROQ_API_KEY", "")
+            done = False
+            if ds_key and not done:
+                try:
+                    async with httpx.AsyncClient(timeout=180) as c:
+                        async with c.stream("POST", DS_URL,
+                            headers={"Authorization": f"Bearer {ds_key}",
+                                     "Content-Type": "application/json"},
+                            json={"model": ki_model, "messages": messages,
+                                  "stream": True, "max_tokens": 32000,
+                                  "temperature": 0.3}) as r:
+                            if r.status_code == 200:
+                                async for line in r.aiter_lines():
+                                    if line.startswith("data: "):
+                                        raw2 = line[6:].strip()
+                                        if raw2 and raw2 != "[DONE]":
+                                            try:
+                                                tok = json.loads(raw2).get("choices", [{}])[0].get("delta", {}).get("content", "")
+                                                if tok:
+                                                    full_buf.append(tok)
+                                                    tok_q.put(tok)
+                                            except Exception:
+                                                pass
+                                done = True
+                except Exception:
+                    pass
+            if groq_key and not done:
+                try:
+                    async with httpx.AsyncClient(timeout=120) as c:
+                        async with c.stream("POST", "https://api.groq.com/openai/v1/chat/completions",
+                            headers={"Authorization": f"Bearer {groq_key}",
+                                     "Content-Type": "application/json"},
+                            json={"model": "llama-3.3-70b-versatile", "messages": messages,
+                                  "stream": True, "max_tokens": 32000,
+                                  "temperature": 0.3}) as r:
+                            if r.status_code == 200:
+                                async for line in r.aiter_lines():
+                                    if line.startswith("data: "):
+                                        raw2 = line[6:].strip()
+                                        if raw2 and raw2 != "[DONE]":
+                                            try:
+                                                tok = json.loads(raw2).get("choices", [{}])[0].get("delta", {}).get("content", "")
+                                                if tok:
+                                                    full_buf.append(tok)
+                                                    tok_q.put(tok)
+                                            except Exception:
+                                                pass
+                                done = True
+                except Exception:
+                    pass
+            if not done:
+                try:
+                    import ollama as _ol
+                    model = os.getenv("OLLAMA_MODEL", "qwen3:8b")
+                    res   = await loop2.run_in_executor(None, lambda: _ol.chat(model=model, messages=messages))
+                    tok   = re.sub(r"<think>.*?</think>", "", res["message"]["content"].strip(), flags=re.DOTALL).strip()
+                    full_buf.append(tok)
+                    tok_q.put(tok)
+                except Exception as e:
+                    tok_q.put(f"Fehler: {e}")
+        loop2.run_until_complete(_run())
+        loop2.close()
+        done_ev.set()
+
+    threading.Thread(target=_streamer, daemon=True).start()
+
+    def generate():
+        # Sobald wir "FILE_READY:" im akkumulierten Output erkennen,
+        # schalten wir in "swallow"-Mode: der nachfolgende Dateiinhalt
+        # wird NICHT als sichtbarer Chat-Token gesendet, sondern am
+        # Ende als file_ready-Event mit Diff geschickt.
+        accum       = ""
+        marker_seen = False
+        sent_chars  = 0
+        # Tail-Buffer: wir streamen nicht die letzten N Zeichen,
+        # damit ein gerade reinkommender "FILE_READY:" Marker nicht
+        # versehentlich als sichtbare Tokens leakt. "FILE_READY:" hat
+        # 12 Zeichen — 14 ist sicheres Polster.
+        TAIL_BUFFER = 14
+
+        while not done_ev.is_set() or not tok_q.empty():
+            try:
+                tok = tok_q.get(timeout=0.05)
+            except queue.Empty:
+                continue
+            if not tok:
+                continue
+            accum += tok
+
+            if marker_seen:
+                # Im swallow-Mode: nichts streamen, nur akkumulieren.
+                continue
+
+            m = re.search(r"FILE_READY\s*:", accum, re.IGNORECASE)
+            if m:
+                visible_until = m.start()
+                if visible_until > sent_chars:
+                    chunk = accum[sent_chars:visible_until]
+                    if chunk:
+                        yield "data: " + json.dumps({"token": chunk}, ensure_ascii=False) + "\n\n"
+                sent_chars = len(accum)
+                marker_seen = True
+                yield "data: " + json.dumps({"file_ready_pending": True}, ensure_ascii=False) + "\n\n"
+                continue
+
+            # Kein Marker bisher — den neuen Tail rausstreamen,
+            # aber TAIL_BUFFER zurueckhalten (Marker-Schutz).
+            if len(accum) - sent_chars > TAIL_BUFFER:
+                safe_until = len(accum) - TAIL_BUFFER
+                chunk = accum[sent_chars:safe_until]
+                if chunk:
+                    yield "data: " + json.dumps({"token": chunk}, ensure_ascii=False) + "\n\n"
+                    sent_chars = safe_until
+
+        # Stream zu Ende. Falls Marker NICHT kam → restlichen Text noch ausspielen.
+        if not marker_seen and len(accum) > sent_chars:
+            chunk = accum[sent_chars:]
+            if chunk:
+                yield "data: " + json.dumps({"token": chunk}, ensure_ascii=False) + "\n\n"
+                sent_chars = len(accum)
+
+        full_text = accum
+
+        # Was geht in die Session-History? Bei FILE_READY-Antworten
+        # NICHT den Volltext der Datei mitschleppen — das wuerde:
+        #   a) den Kontext schnell sprengen
+        #   b) das LLM dazu verleiten in der naechsten Runde wieder
+        #      vorschnell FILE_READY zu produzieren (Pattern-Mimicry)
+        # Stattdessen: nur sichtbarer Teil + kompakte Notiz.
+        if marker_seen:
+            visible_part = re.split(r"FILE_READY\s*:", full_text,
+                                    maxsplit=1, flags=re.IGNORECASE)[0].strip()
+            history_msg = visible_part
+            if history_msg:
+                history_msg += "\n\n"
+            history_msg += "[FILE_READY ausgegeben — Diff wurde dem User gezeigt.]"
+        else:
+            history_msg = full_text
+
+        # Session aktualisieren
+        with _kiedit_lock:
+            s = _kiedit_sessions.get(session_id)
+            if s:
+                s["messages"].append({"role": "assistant", "content": history_msg})
+
+        # Chatlog: bei FILE_READY nur sichtbaren Teil + Hinweis, NICHT
+        # den Volltext der Datei (wuerde Embeddings unbrauchbar machen).
+        if marker_seen:
+            chatlog_msg  = visible_part + ("\n\n" if visible_part else "")
+            chatlog_msg += f"[FILE_READY fuer {filename} vorbereitet — Diff zur Pruefung]"
+            _append_chatlog("assistant", chatlog_msg, source="lab_kiedit")
+        else:
+            _append_chatlog("assistant", full_text, source="lab_kiedit")
+
+        # FILE_READY-Verarbeitung
+        if marker_seen:
+            after = re.split(r"FILE_READY\s*:", full_text, maxsplit=1, flags=re.IGNORECASE)[1]
+            after = after.lstrip("\n\r")
+            after = re.sub(r"^```[a-zA-Z]*\s*\n?", "", after)
+            after = re.sub(r"\n?```\s*$", "", after)
+            new_content = after
+
+            # JSON-Validierung
+            json_error = None
+            if filename.endswith(".json"):
+                try:
+                    json.loads(new_content)
+                except json.JSONDecodeError as je:
+                    json_error = f"Ungueltiges JSON: {je}"
+
+            if json_error:
+                yield "data: " + json.dumps({
+                    "file_ready_error": json_error
+                }, ensure_ascii=False) + "\n\n"
+            else:
+                diff = _make_diff(current_content, new_content, filename)
+                changed = sum(1 for l in diff.splitlines()
+                              if l.startswith(("+", "-")) and not l.startswith(("+++", "---")))
+                yield "data: " + json.dumps({
+                    "file_ready": True,
+                    "filename":   filename,
+                    "original":   current_content,
+                    "modified":   new_content,
+                    "diff":       diff,
+                    "changed":    changed,
+                }, ensure_ascii=False) + "\n\n"
+
+        yield 'data: {"done":true}\n\n'
+
+    return Response(generate(), mimetype="text/event-stream",
+                    headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@orch_blueprint.route("/lab/brain/ki-chat/reset", methods=["POST"])
+def lab_brain_ki_chat_reset():
+    data       = request.get_json(silent=True) or {}
+    session_id = (data.get("session_id") or "").strip()
+    if not session_id:
+        return jsonify({"error": "session_id noetig"}), 400
+    with _kiedit_lock:
+        _kiedit_sessions.pop(session_id, None)
+        _kiedit_models.pop(session_id, None)
+    return jsonify({"ok": True})
+
 
 @orch_blueprint.route("/lab/brain/new", methods=["POST"])
 def lab_brain_new():
@@ -1398,13 +2251,41 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);
 .fview{padding:16px;font-size:.76rem;line-height:1.65;color:var(--text);
        white-space:pre-wrap;word-break:break-all;font-family:'Courier New',monospace}
 
-/* KI bar */
+/* KI bar (alte single-line input — bleibt fuer Kompat) */
 .kibar{display:none;padding:8px 14px;background:var(--bg3);
        border-top:1px solid rgba(167,139,250,.3);gap:8px;align-items:center;flex-shrink:0}
 .kibar.show{display:flex}
 .kii{flex:1;background:var(--bg2);border:1px solid rgba(167,139,250,.4);border-radius:8px;
      padding:7px 12px;color:var(--text);font-family:inherit;font-size:.78rem;outline:none}
 .kii:focus{border-color:var(--purple)}.kii::placeholder{color:var(--sub)}
+
+/* KI Chat Panel — full chat experience for brain edits */
+.kichat{display:none;flex-direction:column;background:var(--bg3);
+        border-top:1px solid rgba(167,139,250,.3);flex-shrink:0;
+        max-height:55%}
+.kichat.show{display:flex}
+.kichat-hdr{display:flex;align-items:center;gap:8px;padding:6px 14px;
+            background:var(--bg2);border-bottom:1px solid rgba(167,139,250,.18);
+            font-size:.7rem;color:var(--purple);font-weight:700;
+            text-transform:uppercase;letter-spacing:.5px;flex-shrink:0}
+.kichat-hdr-fn{color:var(--sub);font-weight:500;text-transform:none;letter-spacing:0;
+               margin-left:4px;font-size:.7rem;overflow:hidden;text-overflow:ellipsis;
+               white-space:nowrap;max-width:180px}
+.kichat-hdr .btn{margin-left:auto;padding:3px 9px;font-size:.65rem}
+.kichat-msgs{flex:1;overflow-y:auto;padding:12px 14px;display:flex;
+             flex-direction:column;gap:8px;min-height:120px;max-height:300px}
+.kichat-msgs::-webkit-scrollbar{width:4px}
+.kichat-msgs::-webkit-scrollbar-thumb{background:rgba(167,139,250,.2);border-radius:2px}
+.kimsg{padding:8px 12px;border-radius:9px;font-size:.78rem;line-height:1.55;
+       max-width:88%;word-break:break-word}
+.kimsg.user{background:rgba(0,255,136,.07);border:1px solid rgba(0,255,136,.18);
+            border-left:3px solid var(--c2);align-self:flex-end}
+.kimsg.bot{background:rgba(167,139,250,.07);border:1px solid rgba(167,139,250,.18);
+           border-left:3px solid var(--purple);align-self:flex-start;white-space:pre-wrap}
+.kimsg.bot.streaming::after{content:"|";animation:blink .8s step-end infinite;color:var(--purple)}
+.kichat-bar{display:flex;gap:8px;align-items:center;padding:8px 14px;
+            background:var(--bg3);border-top:1px solid rgba(167,139,250,.18);
+            flex-shrink:0}
 
 /* Diff overlay */
 .diffov{display:none;position:absolute;inset:0;background:rgba(2,6,23,.97);
@@ -1538,6 +2419,23 @@ html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);
           </div>
         </div>
         <div class="pbody" id="vBody"><div class="fempty">Datei im Explorer wählen.</div></div>
+        <div class="kichat" id="kichat">
+          <div class="kichat-hdr">
+            <span style="color:var(--purple)">&#x2728; KI-EDIT CHAT</span>
+            <span class="kichat-hdr-fn" id="kichatFn"></span>
+            <button class="btn bs" id="kichatRst" onclick="resetKi()">&#x21BB; Neu</button>
+          </div>
+          <div class="kichat-msgs" id="kichatMsgs">
+            <div class="kimsg bot">Was soll an dieser Datei geändert werden? Sag's mir locker — ich frag nach was unklar ist und wenn du mit "übernimm" oder "passt" bestätigst, schlag ich den fertigen Datei-Stand vor.</div>
+          </div>
+          <div class="kichat-bar">
+            <span style="color:var(--purple);flex-shrink:0">&#x2728;</span>
+            <input type="text" class="kii" id="kichatInp"
+                   placeholder="Aenderung beschreiben oder Ruecksprache..."
+                   onkeydown="if(event.key==='Enter')sendKi()">
+            <button class="btn bp" id="kichatBtn" onclick="sendKi()">Senden &#x2192;</button>
+          </div>
+        </div>
         <div class="kibar" id="kibar">
           <span style="color:var(--purple);flex-shrink:0">&#x2728;</span>
           <input type="text" class="kii" id="kii" placeholder="Aenderung beschreiben..."
@@ -1588,6 +2486,10 @@ var kiPend    = null;
 var splitOpen = false;
 var planId    = "p_" + Date.now();
 var planTask  = null;
+// KI-Edit Chat State
+var kiSessId      = null;   // session_id im Backend
+var kiSessFile    = null;   // an welche Datei gebunden
+var kiStreaming   = false;
 var rb, tSt, term, tBody;
 
 // Tree aus hidden div lesen
@@ -1653,6 +2555,11 @@ function sendPlan() {
     var inp = document.getElementById("planInp");
     var msg = inp.value.trim(); if (!msg) return;
     inp.value = "";
+    // Plan ist nicht mehr "fertig" sobald eine neue Nachricht kommt — Banner weg.
+    // Wenn der LLM erneut PLAN_FERTIG generiert, wird es danach wieder gesetzt.
+    planTask = null;
+    var pb = document.getElementById("planBanner");
+    if (pb) pb.classList.remove("show");
     addMsg(msg, "user");
     var btn = document.getElementById("planBtn");
     btn.disabled = true; btn.innerHTML = '<span class="spin y"></span>';
@@ -1719,6 +2626,9 @@ function clearTerm() { if(term) term.innerHTML=""; }
 
 function runM() {
     var mi=document.getElementById("mI"); var task=mi.value.trim(); if(!task) return;
+    // Wenn der Mission-Text dem fertigen Plan entspricht, plan_id mitsenden,
+    // damit der Backend den ganzen Plan-Verlauf an den Builder weitergibt.
+    var planIdToSend = (planTask && task === planTask) ? planId : null;
     clearTerm();
     if(rb) { rb.disabled=true; rb.innerHTML='<span class="spin"></span>Running'; }
     if(tSt) tSt.innerHTML='<span style="color:var(--cy)">&#9679; RUNNING</span>';
@@ -1726,7 +2636,7 @@ function runM() {
     addL("$ "+esc(task),"step");
 
     fetch("/lab/run",{method:"POST",headers:{"Content-Type":"application/json"},
-        body:JSON.stringify({task:task})
+        body:JSON.stringify({task:task, plan_id:planIdToSend})
     }).then(function(r){return r.json();}).then(function(data){
         if(!data.mission_id){addL("Fehler: "+esc(data.error||"?"),"error");resetRb();return;}
         var es=new EventSource("/lab/stream/"+data.mission_id);
@@ -1810,11 +2720,18 @@ function renderEditor(){
         ta.value=curFile.content; ta.addEventListener("input",function(){curFile.content=ta.value;});
         w.appendChild(ta); vb.appendChild(w);
         saveB.style.display="inline-block"; kiTog.style.display="inline-block";
+        // Wenn der KI-Chat schon offen war fuer eine andere Datei → Session reset
+        var kc = document.getElementById("kichat");
+        if (kc && kc.classList.contains("show") && kiSessFile !== curFile.name) {
+            resetKiUI(curFile.name);
+        }
     } else {
         var pre=document.createElement("div"); pre.className="fview";
         pre.textContent=curFile.content; vb.innerHTML=""; vb.appendChild(pre);
         saveB.style.display="none"; kiTog.style.display="none";
         document.getElementById("kibar").classList.remove("show");
+        var kc2 = document.getElementById("kichat");
+        if (kc2) kc2.classList.remove("show");
     }
 }
 function closeViewer(){
@@ -1822,6 +2739,8 @@ function closeViewer(){
     splitOpen=false; curFile=null;
     document.querySelectorAll(".tfile").forEach(function(el){el.classList.remove("act");});
     document.getElementById("kibar").classList.remove("show");
+    var kc = document.getElementById("kichat");
+    if (kc) kc.classList.remove("show");
     closeDiff(); updateModeBar(curMode,null);
 }
 function saveFile(){
@@ -1834,9 +2753,170 @@ function saveFile(){
     });
 }
 function toggleKi(){
-    document.getElementById("kibar").classList.toggle("show");
-    if(document.getElementById("kibar").classList.contains("show")) document.getElementById("kii").focus();
+    var kc = document.getElementById("kichat");
+    if (!kc) return;
+    var nowOn = !kc.classList.contains("show");
+    if (nowOn) {
+        // Wenn Datei wechselt: Session zuruecksetzen (sonst falscher Kontext)
+        if (curFile && kiSessFile !== curFile.name) {
+            resetKiUI(curFile.name);
+        }
+        kc.classList.add("show");
+        var fnEl = document.getElementById("kichatFn");
+        if (fnEl && curFile) fnEl.textContent = curFile.name;
+        var inp = document.getElementById("kichatInp");
+        if (inp) setTimeout(function(){ inp.focus(); }, 50);
+    } else {
+        kc.classList.remove("show");
+    }
 }
+
+// KI-Edit Chat — neue Variante (mit Verlauf, Streaming, FILE_READY-Trigger)
+function resetKiUI(filename){
+    // UI zuruecksetzen — neue Session-ID, Verlauf leeren
+    kiSessId   = "k_" + Date.now() + "_" + Math.floor(Math.random()*9999);
+    kiSessFile = filename || (curFile ? curFile.name : null);
+    var msgs = document.getElementById("kichatMsgs");
+    if (msgs) {
+        msgs.innerHTML = '<div class="kimsg bot">Was soll an <b>'
+            + esc(kiSessFile || "dieser Datei")
+            + '</b> geändert werden? Beschreib die Änderung locker — ich frag nach was unklar ist und wenn du mit "übernimm" oder "passt" bestätigst, schlag ich den fertigen Datei-Stand vor.</div>';
+    }
+    var fnEl = document.getElementById("kichatFn");
+    if (fnEl) fnEl.textContent = kiSessFile || "";
+}
+
+function resetKi(){
+    // Backend-Session ebenfalls resetten (best-effort)
+    if (kiSessId) {
+        fetch("/lab/brain/ki-chat/reset",{method:"POST",headers:{"Content-Type":"application/json"},
+            body:JSON.stringify({session_id:kiSessId})}).catch(function(){});
+    }
+    resetKiUI(curFile ? curFile.name : null);
+}
+
+function addKiMsg(text, cls){
+    var msgs = document.getElementById("kichatMsgs");
+    if (!msgs) return null;
+    var d = document.createElement("div");
+    d.className = "kimsg " + cls;
+    d.textContent = text;
+    msgs.appendChild(d);
+    msgs.scrollTop = 999999;
+    return d;
+}
+
+function sendKi(){
+    if (kiStreaming) return;
+    if (!curFile || !curFile.brain) { toast("Keine Brain-Datei geöffnet", true); return; }
+    var inp = document.getElementById("kichatInp");
+    var msg = inp.value.trim();
+    if (!msg) return;
+    inp.value = "";
+
+    // Falls noch keine Session laeuft oder Datei gewechselt: starten
+    if (!kiSessId || kiSessFile !== curFile.name) {
+        resetKiUI(curFile.name);
+    }
+
+    // Live-Editor-Inhalt mitschicken (User koennte manuell editiert haben)
+    var ta = document.getElementById("eta");
+    var liveContent = ta ? ta.value : curFile.content;
+    curFile.content = liveContent;
+
+    addKiMsg(msg, "user");
+    var btn = document.getElementById("kichatBtn");
+    if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spin"></span>'; }
+    var botDiv = addKiMsg("", "bot streaming");
+    kiStreaming = true;
+
+    fetch("/lab/brain/ki-chat", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+            session_id: kiSessId,
+            filename:   curFile.name,
+            message:    msg,
+            content:    liveContent
+        })
+    }).then(function(r){
+        if (!r.ok) {
+            return r.json().then(function(j){ throw new Error(j.error || ("HTTP "+r.status)); });
+        }
+        var reader = r.body.getReader();
+        var dec    = new TextDecoder();
+        var buf    = "";
+        function read(){
+            reader.read().then(function(res){
+                if (res.done) {
+                    botDiv.classList.remove("streaming");
+                    kiStreaming = false;
+                    if (btn) { btn.disabled = false; btn.textContent = "Senden →"; }
+                    return;
+                }
+                buf += dec.decode(res.value, {stream:true});
+                var lines = buf.split("\\n");
+                buf = lines.pop();
+                lines.forEach(function(line){
+                    if (!line.startsWith("data: ")) return;
+                    try {
+                        var d = JSON.parse(line.slice(6));
+                        if (d.token) {
+                            botDiv.textContent += d.token;
+                            var msgs = document.getElementById("kichatMsgs");
+                            if (msgs) msgs.scrollTop = 999999;
+                        }
+                        if (d.file_ready_pending) {
+                            // Status-Hinweis im Bot-Bubble
+                            if (!botDiv.textContent.trim()) {
+                                botDiv.textContent = "(bereitet Datei vor...)";
+                            } else {
+                                botDiv.textContent += "\\n\\n(bereitet Datei vor...)";
+                            }
+                            var msgs2 = document.getElementById("kichatMsgs");
+                            if (msgs2) msgs2.scrollTop = 999999;
+                        }
+                        if (d.file_ready) {
+                            // Diff-Overlay aufmachen — Apply laeuft danach ueber /lab/brain/apply
+                            kiPend = {
+                                original: d.original,
+                                modified: d.modified,
+                                filename: d.filename
+                            };
+                            // Status-Hinweis im Bot-Bubble ersetzen
+                            botDiv.textContent = (botDiv.textContent.replace(/\\(bereitet Datei vor\\.\\.\\.\\)/g,"").trim() ||
+                                                  "Vorschlag fertig — Diff zur Prüfung geöffnet.");
+                            showDiff(d.diff, d.changed);
+                        }
+                        if (d.file_ready_error) {
+                            botDiv.textContent += "\\n\\n⚠️ Fehler: " + d.file_ready_error;
+                            toast("KI-Output: " + d.file_ready_error, true);
+                        }
+                        if (d.error) {
+                            botDiv.textContent += "\\n\\n⚠️ " + d.error;
+                        }
+                    } catch(e) {}
+                });
+                read();
+            }).catch(function(e){
+                botDiv.textContent += "\\n\\n⚠️ Fehler: " + e.message;
+                botDiv.classList.remove("streaming");
+                kiStreaming = false;
+                if (btn) { btn.disabled = false; btn.textContent = "Senden →"; }
+            });
+        }
+        read();
+    }).catch(function(e){
+        botDiv.textContent = "Fehler: " + e.message;
+        botDiv.classList.remove("streaming");
+        kiStreaming = false;
+        if (btn) { btn.disabled = false; btn.textContent = "Senden →"; }
+    });
+}
+
+// Legacy single-shot KI-Edit (kibar) — bleibt erhalten, aktuell nicht
+// vom UI getriggert (toggleKi macht jetzt den Chat auf). Nur als
+// Fallback falls etwas extern noch runKi() ruft.
 function runKi(){
     if(!curFile||!curFile.brain) return;
     var cr=document.getElementById("kii").value.trim(); if(!cr){toast("Beschreibung eingeben",true);return;}
@@ -1874,8 +2954,17 @@ function applyKi(){
         if(d.ok){
             curFile.content=kiPend.modified;
             var ta=document.getElementById("eta"); if(ta) ta.value=kiPend.modified;
-            closeDiff(); document.getElementById("kibar").classList.remove("show");
+            var fname = kiPend.filename;
+            var bk    = d.backup ? (" (Backup: "+d.backup+")") : "";
+            closeDiff();
+            document.getElementById("kibar").classList.remove("show");
             document.getElementById("kii").value="";
+            // Bestaetigung im KI-Chat anzeigen — Chat bleibt offen,
+            // User kann direkt weiter editieren wenn er will.
+            var kc = document.getElementById("kichat");
+            if (kc && kc.classList.contains("show")) {
+                addKiMsg("✅ Übernommen — '" + fname + "' gespeichert" + bk + ".", "bot");
+            }
             toast("KI-Edit angewendet"+(d.backup?" ("+d.backup+")":""));
         } else toast("Fehler: "+(d.error||"?"),true);
     });
@@ -1887,6 +2976,10 @@ function brainWelcome(){
         '<button class="btn bp" onclick="newBrainFile()">+ Neue Datei</button></div>';
     document.getElementById("saveB").style.display="none";
     document.getElementById("kiTog").style.display="none";
+    var kc = document.getElementById("kichat");
+    if (kc) kc.classList.remove("show");
+    var kb = document.getElementById("kibar");
+    if (kb) kb.classList.remove("show");
 }
 function newBrainFile(){
     var name=prompt("Dateiname (z.B. notes.txt):"); if(!name) return;

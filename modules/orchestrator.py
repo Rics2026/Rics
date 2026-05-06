@@ -16,7 +16,7 @@ load_dotenv()
 BOT_NAME   = os.getenv("BOT_NAME", "RICS")
 DS_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
 DS_URL     = "https://api.deepseek.com/v1/chat/completions"
-DS_MODEL   = "deepseek-chat"
+DS_MODEL   = "deepseek-reasoner"  # Thinking / R1 — für komplexe Code-Generierung
 
 PROJECT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WORKSPACE   = os.path.join(PROJECT_DIR, "workspace")
@@ -171,8 +171,33 @@ FÜR EXTERNE API-MODULE (KRITISCH — HALLUZINATIONS-SCHUTZ):
 - Wenn ein RECHERCHE-ERGEBNIS vorliegt: Verwende NUR die Felder die dort tatsächlich aufgetaucht sind.
 - Wenn kein Recherche-Ergebnis: Nutze nur Felder die in der offiziellen Dokumentation explizit genannt werden.
 - Wenn ein RECHERCHE-ERGEBNIS vorliegt das einen funktionierenden Endpoint (HTTP 200) nennt: diesen verwenden.
-- Wenn das Recherche-Ergebnis einen 401/403-Fehler zeigt: KEINEN kostenpflichtigen Endpoint verwenden,
-  sondern den kostenlosen Fallback-Endpoint aus dem Recherche-Ergebnis nehmen.
+
+AUTH-WALL-INTERPRETATION (KRITISCH — Steam/Spotify/GitHub-Pattern):
+- 401/403 in der Recherche bedeutet NICHT "Endpoint ist kostenpflichtig" oder "API gesperrt".
+- 401/403 bedeutet: Der Endpoint EXISTIERT und funktioniert, aber der Recherche-Code hat
+  mit einem Dummy-Key getestet. Der echte User-Key (im PLAN-VERLAUF / TASK genannt)
+  wird ihn entsperren.
+- KONSEQUENZ: Wenn der Task einen API-Key enthaelt UND die Recherche 401/403 zeigte,
+  dann verwende GENAU diesen 401/403-Endpoint mit dem User-Key — NICHT auf einen
+  vermeintlich "kostenlosen Fallback-Endpoint" ausweichen, denn ein abweichender
+  oeffentlicher Endpoint loest meist eine ANDERE Aufgabe (z.B. Storefront-Top-Sellers
+  statt User-Bibliothek). Auswahl des Endpoints muss dem TASK folgen, nicht der
+  Auth-Freiheit.
+- "DOKU_SCHEMA"-Recherche-Output: Die Recherche konnte den Endpoint nicht selbst
+  testen, hat aber das Response-Schema aus offizieller Doku extrahiert. Behandle das
+  ALS WAERE es ein 200-Sample — folge den dort genannten Wrapper-Pfaden GENAU
+  (z.B. wenn dort 'friendslist.friends[]' steht, dann nutze response.json()
+  ["friendslist"]["friends"], NICHT direkt ["friends"]).
+
+API-RESPONSE-WRAPPER (KRITISCH — JSON-Pfad-Halluzination vermeiden):
+- Viele APIs nesten Response-Daten unterschiedlich tief — sogar INNERHALB derselben API.
+  Beispiele: GetPlayerSummaries → response.players[], GetFriendList → friendslist.friends[],
+  GetOwnedGames → response.games[]. Konsistenz ist NICHT garantiert.
+- NIEMALS pauschal annehmen alle Endpoints einer API haetten den gleichen Wrapper.
+- Wenn das Recherche-Ergebnis ODER die Doku einen konkreten Pfad nennt: GENAU diesen Pfad
+  verwenden. Wenn kein Pfad bekannt: defensiv mit verschachtelten .get() arbeiten:
+    data = resp.json()
+    items = data.get("response", {}).get("items") or data.get("items") or []
 - Bei API-Modulen ohne Recherche-Ergebnis: Absichern mit .get() und sinnvollem Fallback für JEDEN Feldzugriff.
 
 FÜR API-MODULE MIT USER-INPUT (KRITISCH — robuste Eingabe-Behandlung):
@@ -523,7 +548,7 @@ class Orchestrator:
                     "model":       DS_MODEL,
                     "messages":    messages,
                     "stream":      False,
-                    "max_tokens":  4096,
+                    "max_tokens":  32000,
                     "temperature": 0.2,  # Niedrig für Code-Generierung
                 }
                 if use_json:

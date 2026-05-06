@@ -800,6 +800,24 @@ async def autonomous_thinker(context: ContextTypes.DEFAULT_TYPE):
     name         = personal.get("basisinfo", {}).get("name", "Rene")
     now_ts       = now.timestamp()
 
+    # GPS-Standort laden
+    gps_adresse    = None
+    gps_unterwegs  = False
+    try:
+        _gf = os.path.join(PROJECT_DIR, "memory", "gps.json")
+        if os.path.exists(_gf):
+            with open(_gf, "r") as _gfh:
+                _gd = json.load(_gfh)
+            if _gd.get("aktiv") and _gd.get("adresse"):
+                gps_adresse   = _gd["adresse"]
+                _heimat       = os.getenv("WOHNORT", "").lower()
+                gps_unterwegs = _heimat not in gps_adresse.lower()
+    except Exception:
+        pass
+
+    standort_str = f"Aktueller Standort: {gps_adresse}" if gps_adresse else f"Heimatort: {wohnort}"
+    unterwegs_str = "unterwegs" if gps_unterwegs else "zuhause"
+
     # Interessen lernen + Stimmung erkennen
     update_interests_from_chat(recent_chat)
     top_interests = get_top_interests(3)
@@ -1193,7 +1211,8 @@ async def autonomous_thinker(context: ContextTypes.DEFAULT_TYPE):
         if use_memory_recall:
             prompt = (
                 f"Du bist {BOT_NAME} — KI-Freund von {name} aus {wohnort}.\n"
-                f"Zeit: {now_str} | Tageszeit: {daytime}\n"
+                f"Zeit: {now_str} | Tageszeit: {daytime} | {name} ist gerade {unterwegs_str}\n"
+                f"{standort_str}\n"
                 f"Letzte Gesprächsthemen von {name}: {_chat_context}\n"
                 f"Gespeicherte Erinnerung: {memory_hint}{_cv_block}\n\n"
                 f"Erinnere dich spontan an ein konkretes Thema das ihr kürzlich besprochen haben — "
@@ -1206,10 +1225,12 @@ async def autonomous_thinker(context: ContextTypes.DEFAULT_TYPE):
             prompt = (
                 f"Du bist {BOT_NAME} — KI-Freund von {name}.\n"
                 f"Zeit: {now_str} | Tageszeit: {daytime} | Stimmung von {name}: {mood}\n"
+                f"{name} ist gerade {unterwegs_str} | {standort_str}\n"
                 f"Was {name} zuletzt interessiert hat: {memory_hint}{_cv_block}\n\n"
                 f"Erzähl {name} kurz etwas Konkretes aus dem Alltag — was du heute bemerkt hast, "
                 f"etwas das du interessant findest, eine kleine Beobachtung über euch beide "
                 f"oder etwas das gerade passiert (Wetter, Solar, Tageszeit). "
+                f"Wenn {name} unterwegs ist, darfst du das einbeziehen. "
                 f"Kein philosophisches Abhandeln, keine Aufforderung zum Diskutieren. "
                 f"Direkt und natürlich, wie ein Freund der kurz was sagt. "
                 f"Max. 2 Sätze. Kein Markdown, kein Hallo."

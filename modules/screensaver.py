@@ -1387,19 +1387,62 @@ async function fetchDiscord(){
       const W=canvas.offsetWidth, H=canvas.offsetHeight;
       const el = document.getElementById(action.id);
       if(!el) return;
+      const SNAP = 12; // px Einrastabstand
+
+      // Alle anderen sichtbaren Card-Kanten sammeln
+      function snapEdges(){
+        const edges={x:[], y:[]};
+        canvas.querySelectorAll('.card').forEach(c=>{
+          if(c.id===action.id || c.style.display==='none') return;
+          const l=parseFloat(c.style.left)||0, t=parseFloat(c.style.top)||0;
+          const r=l+(parseFloat(c.style.width)||c.offsetWidth);
+          const b=t+(parseFloat(c.style.height)||c.offsetHeight);
+          edges.x.push(l, r);
+          edges.y.push(t, b);
+        });
+        // Canvas-Kanten
+        edges.x.push(0, W); edges.y.push(0, H);
+        return edges;
+      }
+
+      function snapVal(val, candidates){
+        for(const c of candidates){
+          if(Math.abs(val-c)<SNAP) return c;
+        }
+        return val;
+      }
 
       if(action.type==='drag'){
         const dx=e.clientX-action.startX, dy=e.clientY-action.startY;
-        const newL = Math.max(0, Math.min(W - el.offsetWidth,  action.startL+dx));
-        const newT = Math.max(0, Math.min(H - el.offsetHeight, action.startT+dy));
-        el.style.left = newL+'px';
-        el.style.top  = newT+'px';
+        let newL = Math.max(0, Math.min(W - el.offsetWidth,  action.startL+dx));
+        let newT = Math.max(0, Math.min(H - el.offsetHeight, action.startT+dy));
+        const edges = snapEdges();
+        const elW=el.offsetWidth, elH=el.offsetHeight;
+        // Snap: linke Kante, rechte Kante
+        const snappedL = snapVal(newL, edges.x);
+        if(snappedL!==newL){ newL=snappedL; }
+        else { const snappedR=snapVal(newL+elW, edges.x); if(snappedR!==newL+elW) newL=snappedR-elW; }
+        // Snap: obere Kante, untere Kante
+        const snappedT = snapVal(newT, edges.y);
+        if(snappedT!==newT){ newT=snappedT; }
+        else { const snappedB=snapVal(newT+elH, edges.y); if(snappedB!==newT+elH) newT=snappedB-elH; }
+        el.style.left = Math.max(0,Math.min(W-elW,newL))+'px';
+        el.style.top  = Math.max(0,Math.min(H-elH,newT))+'px';
       } else {
         const dx=e.clientX-action.startX, dy=e.clientY-action.startY;
-        const maxW = W - parseFloat(el.style.left||0);
-        const maxH = H - parseFloat(el.style.top||0);
-        el.style.width  = Math.max(120, Math.min(maxW, action.startW+dx))+'px';
-        el.style.height = Math.max(80,  Math.min(maxH, action.startH+dy))+'px';
+        const elL=parseFloat(el.style.left)||0, elT=parseFloat(el.style.top)||0;
+        const maxW=W-elL, maxH=H-elT;
+        let newW = Math.max(120, Math.min(maxW, action.startW+dx));
+        let newH = Math.max(80,  Math.min(maxH, action.startH+dy));
+        const edges = snapEdges();
+        // Snap: rechte Kante an andere linke/rechte Kanten
+        const snappedR = snapVal(elL+newW, edges.x);
+        if(snappedR!==elL+newW) newW=Math.max(120,snappedR-elL);
+        // Snap: untere Kante an andere obere/untere Kanten
+        const snappedB = snapVal(elT+newH, edges.y);
+        if(snappedB!==elT+newH) newH=Math.max(80,snappedB-elT);
+        el.style.width  = newW+'px';
+        el.style.height = newH+'px';
       }
     });
 

@@ -25,6 +25,8 @@ CHAT_ID     = int(os.getenv("CHAT_ID", "0"))
 
 # Radius in Metern um einen bekannten Ort damit er als "dort" gilt
 MATCH_RADIUS_M = 150
+# Radius ab dem RICS eine Annaeherungs-Nachricht schickt
+APPROACH_RADIUS_M = 500
 
 # ─────────────────────────────────────────────────────────────
 # STATE
@@ -80,6 +82,22 @@ def _finde_ort(lat: float, lng: float, bekannte_orte: dict) -> str | None:
     if best_dist <= MATCH_RADIUS_M:
         return best_name
     return None
+
+
+def _finde_naehert_sich(lat: float, lng: float, bekannte_orte: dict) -> tuple[str | None, float]:
+    """Gibt (name, distanz) des naechsten Ortes im Annaeherungs-Radius zurueck."""
+    best_name = None
+    best_dist = float("inf")
+    for name, ort in bekannte_orte.items():
+        if ort.get("lat") is None or ort.get("lng") is None:
+            continue
+        d = _distanz_m(lat, lng, ort["lat"], ort["lng"])
+        if d < best_dist:
+            best_dist = d
+            best_name = name
+    if MATCH_RADIUS_M < best_dist <= APPROACH_RADIUS_M:
+        return best_name, best_dist
+    return None, best_dist
 
 
 # ─────────────────────────────────────────────────────────────
@@ -144,9 +162,14 @@ async def _verarbeite(lat: float, lng: float, bot, msg_id: int | None = None):
     if not data.get("aktiv"):
         return
 
-    adresse  = await _reverse_geocode(lat, lng)
-    jetzt    = datetime.now(TIMEZONE).strftime("%d.%m.%Y %H:%M:%S")
-    ort_name = _finde_ort(lat, lng, data.get("bekannte_orte", {}))
+    adresse        = await _reverse_geocode(lat, lng)
+    jetzt          = datetime.now(TIMEZONE).strftime("%d.%m.%Y %H:%M:%S")
+    bekannte_orte  = data.get("bekannte_orte", {})
+    ort_name       = _finde_ort(lat, lng, bekannte_orte)
+    naehert, dist  = _finde_naehert_sich(lat, lng, bekannte_orte)
+
+    alter_ort      = data.get("ort_name")
+    letzte_meldung = data.get("letzte_annaeherungs_meldung")
 
     data.update({
         "lat":           lat,
@@ -159,6 +182,34 @@ async def _verarbeite(lat: float, lng: float, bot, msg_id: int | None = None):
 
     ort_info = f" [{ort_name}]" if ort_name else ""
     print(f"[GPS] {adresse}{ort_info} ({lat:.5f}, {lng:.5f})")
+
+    bot_name = os.getenv("BOT_NAME", "Ich")
+
+    # Annaeherungs-Nachricht: nur wenn noch nicht gemeldet fuer diesen Ort
+    if naehert and letzte_meldung != naehert:
+        dist_str = f"{int(dist)}m"
+        await bot.send_message(
+            chat_id=CHAT_ID,
+            text=f"Du bist gleich bei <b>{html.escape(naehert)}</b> — noch ca. {dist_str}.",
+            parse_mode="HTML"
+        )
+        data["letzte_annaeherungs_meldung"] = naehert
+        _save(data)
+
+    # Ankunfts-Nachricht: wenn Ort neu erkannt (war vorher woanders oder unterwegs)
+    elif ort_name and ort_name != alter_ort:
+        await bot.send_message(
+            chat_id=CHAT_ID,
+            text=f"Du bist jetzt bei <b>{html.escape(ort_name)}</b>. 📍",
+            parse_mode="HTML"
+        )
+        data["letzte_annaeherungs_meldung"] = None  # reset fuer naechstes Mal
+        _save(data)
+
+    # Wenn user den Ort verlassen hat: reset
+    elif not ort_name and not naehert and letzte_meldung:
+        data["letzte_annaeherungs_meldung"] = None
+        _save(data)
 
 
 # ─────────────────────────────────────────────────────────────

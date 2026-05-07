@@ -1,3 +1,4 @@
 Update 4.3
 - gps.py einmal Live Location neuteilen. und wenn der chat gelöscht ist wieder neu teilen
+         er erkennt im radius von 500 meter standorte und gibt bescheid
 - bot.py fix

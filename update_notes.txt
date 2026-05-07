@@ -1,7 +1,3 @@
-Update 4.0
-- gps.py /gps_start eingeben und er kennt die Position, er speichert auch position "hier arbeite ich"
-- bot.py   
-  - Chat auf 15 Nachichten erweitert
-- screensaver.py - Screensaver Panel anpassbar
-- web_orchestrator auf 32k Token erweitert
-- proactive Gibt im Radius von 150m sollte die Position bekannt sein
+Update 4.2
+- gps.py fix
+- bot.py fix

@@ -160,13 +160,6 @@ async def _verarbeite(lat: float, lng: float, bot, msg_id: int | None = None):
     ort_info = f" [{ort_name}]" if ort_name else ""
     print(f"[GPS] {adresse}{ort_info} ({lat:.5f}, {lng:.5f})")
 
-    # Initiale Location-Bubble loeschen
-    if msg_id:
-        try:
-            await bot.delete_message(chat_id=CHAT_ID, message_id=msg_id)
-        except (BadRequest, Exception):
-            pass
-
 
 # ─────────────────────────────────────────────────────────────
 # HANDLER

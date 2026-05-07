@@ -1563,7 +1563,7 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, jarvis.chat))
     app.add_handler(MessageReactionHandler(jarvis.handle_reaction))
 
-    app.run_polling(allowed_updates=["message", "callback_query", "message_reaction"])
+    app.run_polling(allowed_updates=["message", "callback_query", "message_reaction", "edited_message"])
 
 
 if __name__ == "__main__":

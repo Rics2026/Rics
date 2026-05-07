@@ -1,9 +1,4 @@
-Version 4.1
+Version 4.2
 bot.py
 modules/gps.py
-modules/screensaver.py
-modules/web_orchestrator.py
-modules/orchestrator.py
-modules/proactive_brain.py
-modules/wetteralarm.py
-modules/memory_viewer.py
+

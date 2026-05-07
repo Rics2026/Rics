@@ -333,8 +333,6 @@ def setup(app: Application):
     app.add_handler(CommandHandler("gps_merke",  cmd_gps_merke))
     app.add_handler(CommandHandler("gps_orte",   cmd_gps_orte))
     app.add_handler(MessageHandler(filters.LOCATION, handle_location))
-    app.add_handler(MessageHandler(
-        filters.UpdateType.EDITED_MESSAGE & filters.LOCATION,
-        handle_live_update
-    ))
+    # edited_message: LOCATION-Check im Handler selbst, nicht per Filter
+    app.add_handler(MessageHandler(filters.UpdateType.EDITED_MESSAGE, handle_live_update))
     print("GPS-Modul geladen")

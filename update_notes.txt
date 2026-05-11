@@ -1,4 +1,3 @@
-Update 4.3
-- gps.py einmal Live Location neuteilen. und wenn der chat gelöscht ist wieder neu teilen
-         er erkennt im radius von 500 meter standorte und gibt bescheid
-- bot.py fix
+Update 4.4
+ - Wetter.py Wetter nun mit vorhersage
+ - /wetter Morgen oder /wetter München morgen

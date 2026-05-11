@@ -1,4 +1,3 @@
-Version 4.3
-bot.py
-modules/gps.py
+Version 4.4
+modules/wetter.py
 
